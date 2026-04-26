@@ -1,0 +1,14 @@
+--- a/src/components/Dashboard.tsx
++++ b/src/components/Dashboard.tsx
+@@ -50,6 +50,7 @@
+   totalDisbursed: 0,
++  totalRepayment: 0,
+   activeSecurities: 0,
+   totalWriteOff: 0,
+ }
+@@ -344,6 +344,7 @@
+         totalDisbursed: loans.reduce((sum, loan) => sum + loan.amount, 0),
++        totalRepayment: 0, // Will be calculated from collections
+         activeSecurities: loans.filter(loan => loan.status === 'active').length,
+         totalWriteOff: 0
+       }

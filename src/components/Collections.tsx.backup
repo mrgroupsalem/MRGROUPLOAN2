@@ -1,0 +1,2513 @@
+  'use client'
+
+import React, { useState, useEffect } from 'react'
+import { 
+  Search, 
+  Filter, 
+  Download, 
+  Eye, 
+  Calendar,
+  User,
+  CreditCard,
+  TrendingUp,
+  FileText,
+  X
+} from 'lucide-react'
+import { Collection, Loan, Customer, Employee, WeeklyBatch } from '@/types'
+import { formatCurrency, formatDate } from '@/lib/utils'
+import { exportCollections } from '@/lib/exportUtils'
+import { supabase } from '@/lib/supabase'
+
+interface CollectionsProps {
+  onBack: () => void
+}
+
+export default function Collections({ onBack }: CollectionsProps) {
+  const [collections, setCollections] = useState<Collection[]>([])
+  const [loans, setLoans] = useState<Loan[]>([])
+  const [customers, setCustomers] = useState<Customer[]>([])
+  const [employees, setEmployees] = useState<Employee[]>([])
+  const [loading, setLoading] = useState(true)
+  const [searchTerm, setSearchTerm] = useState('')
+  const [dateFilter, setDateFilter] = useState('')
+  const [workerFilter, setWorkerFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState('all')
+  const [selectedCollection, setSelectedCollection] = useState<Collection | null>(null)
+  const [showDetailsModal, setShowDetailsModal] = useState(false)
+  const [weeklyBatches, setWeeklyBatches] = useState<WeeklyBatch[]>([])
+  const [selectedBatch, setSelectedBatch] = useState<WeeklyBatch | null>(null)
+  const [showBatchModal, setShowBatchModal] = useState(false)
+  const [selectedWorker, setSelectedWorker] = useState<Employee | null>(null)
+  const [showWorkerModal, setShowWorkerModal] = useState(false)
+  const [showCollectionModal, setShowCollectionModal] = useState(false)
+  const [collectionType, setCollectionType] = useState<'batch' | 'worker' | null>(null)
+  const [collectionTarget, setCollectionTarget] = useState<WeeklyBatch | Employee | null>(null)
+    const [batchSelectIds, setBatchSelectIds] = useState<Record<string, boolean>>({})
+  const [pendingBatchFilter, setPendingBatchFilter] = useState<string>('')
+  const [showPendingDetailsModal, setShowPendingDetailsModal] = useState(false)
+  const [selectedPending, setSelectedPending] = useState<{ loan: Loan, weeklyEmi: number } | null>(null)
+  // Pending counts from Supabase: loanId -> { count, emi }
+  const [pendingCounts, setPendingCounts] = useState<Record<string, { count: number, emi: number }>>({})
+  
+  // Track which customers have been processed in current session to prevent duplicates
+  const [processedInSession, setProcessedInSession] = useState<Set<string>>(new Set())
+  
+  // Track sync status with Dashboard
+  const [isSyncingWithDashboard, setIsSyncingWithDashboard] = useState(false)
+
+  // Helpers for week window and local date parsing to avoid timezone issues
+  const getCurrentWeekRange = () => {
+    const end = new Date()
+    const start = new Date()
+    start.setDate(end.getDate() - 6)
+    start.setHours(0,0,0,0)
+    end.setHours(23,59,59,999)
+    return { start, end }
+  }
+  const parseDateOnly = (value: string | Date) => {
+    if (value instanceof Date) return value
+    if (!value) return new Date('1970-01-01')
+    const raw = String(value)
+    const datePart = raw.includes('T') ? raw.slice(0, 10) : raw
+    const parts = datePart.split('-')
+    if (parts.length === 3) {
+      const y = Number(parts[0])
+      const m = Number(parts[1]) - 1
+      const d = Number(parts[2])
+      return new Date(y, m, d)
+    }
+    return new Date(datePart)
+  }
+
+  // Broadcast pendingCounts changes for dashboard sync
+  useEffect(() => {
+    if (Object.keys(pendingCounts).length > 0) {
+      setIsSyncingWithDashboard(true)
+      try {
+        const bc = new BroadcastChannel('collections')
+        bc.postMessage({ type: 'pending-counts-updated', at: Date.now(), counts: pendingCounts })
+        bc.close()
+        setTimeout(() => setIsSyncingWithDashboard(false), 1000)
+      } catch {}
+    }
+  }, [pendingCounts])
+
+  // Local helper (declared early to avoid temporal dead zone issues)
+  const computeWeeklyEmiFor = (loan: Loan): number => {
+    const interestRateMapping: { [key: string]: number } = {
+      '8.33': 833, '6.33': 633, '12': 1200, '110': 11000, '115': 11500,
+      '10': 1000, '25': 2500, '30': 3000, '111.11': 11111, '20': 2000
+    }
+    const r = loan.interest_rate || '8.33'
+    const emiAmount = interestRateMapping[r] || 833
+    const totalInterest = emiAmount * (loan.number_of_weeks || 15)
+    return totalInterest / (loan.number_of_weeks || 15)
+  }
+
+  // Helper to get weekday index for a batch day string
+  const getWeekdayIndex = (day?: string) => {
+    if (!day) return -1
+    const map: Record<string, number> = { sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6 }
+    return map[String(day).toLowerCase()] ?? -1
+  }
+
+  // Compute pending weeks for missed payments (e.g., Santhosh paid 3 weeks, missed 4th week)
+  // This calculates how many weeks have been missed since the last collection
+  const computePendingWeeks = (loan: Loan): number => {
+    const today = new Date()
+    const startOfToday = new Date(today)
+    startOfToday.setHours(0,0,0,0)
+
+    // Get all completed collections for this loan, sorted by date (oldest first)
+    const completedCollections = collections
+      .filter(c => c.loan_id === loan.id && String(c.status).toLowerCase() === 'completed')
+      .sort((a, b) => new Date(a.collection_date).getTime() - new Date(b.collection_date).getTime())
+
+    if (completedCollections.length === 0) {
+      // No collections yet - count weeks from loan start date
+      const loanStartDate = new Date(loan.start_date)
+      const daysSinceStart = Math.floor((startOfToday.getTime() - loanStartDate.getTime()) / (24 * 60 * 60 * 1000))
+      const weeksSinceStart = Math.ceil(daysSinceStart / 7)
+      return Math.max(1, weeksSinceStart) // At least 1 week pending
+    }
+
+    // Calculate total amount collected so far
+    const totalCollected = completedCollections.reduce((sum, c) => sum + (Number(c.amount_collected) || 0), 0)
+    
+    // Calculate weekly EMI for this loan
+    const interestRateMapping: { [key: string]: number } = {
+      '8.33': 833, '6.33': 633, '12': 1200, '110': 11000, '115': 11500,
+      '10': 1000, '25': 2500, '30': 3000, '111.11': 11111, '20': 2000
+    }
+    const rate = loan.interest_rate || '8.33'
+    const emiAmount = interestRateMapping[rate] || 833
+    const weeklyEmi = emiAmount
+    
+    // Calculate how many weeks have been paid
+    const weeksPaid = Math.floor(totalCollected / weeklyEmi)
+    
+    // Calculate how many weeks are pending (next week to be collected)
+    const weeksPending = Math.max(1, weeksPaid + 1 - completedCollections.length)
+    
+    // Debug logging
+    console.log('Pending weeks calculation:', {
+      customer: loan.customer?.name,
+      loanId: loan.id,
+      totalCollected,
+      weeklyEmi,
+      weeksPaid,
+      completedCollections: completedCollections.length,
+      weeksPending
+    })
+    
+    return weeksPending
+  }
+
+  // Compute stored pending count for a customer (from Supabase)
+  const computePendingCount = (loan: Loan): number => {
+    const entry = pendingCounts[loan.id]
+    const count = entry?.count || 0
+    console.log(`Pending count for ${loan.customer?.name}: ${count}`)
+    return count
+  }
+
+  // Force refresh pending customers from database (only unchecked ones)
+  const refreshPendingCustomers = async () => {
+    try {
+      const { data: pend, error: pendErr } = await supabase
+        .from('pending_customers')
+        .select('loan_id, pending_count, emi_amount, checked')
+        .eq('checked', false) // Only load unchecked customers
+      
+      if (!pendErr) {
+        const map: Record<string, { count: number, emi: number }> = {}
+        ;(pend || []).forEach(r => { 
+          if (!r.checked) { // Double check - only add unchecked customers
+            map[r.loan_id] = { count: Number(r.pending_count || 0), emi: Number(r.emi_amount || 0) } 
+          }
+        })
+        setPendingCounts(map)
+        console.log('Force refreshed pending customers (unchecked only):', map)
+      } else {
+        console.error('Error refreshing pending customers:', pendErr)
+      }
+    } catch (error) {
+      console.error('Failed to refresh pending customers:', error)
+    }
+  }
+
+  // Load collected customers from database using pending_customers checked column
+  const loadCollectedCustomers = async () => {
+    try {
+      const { data: collected, error: collectedErr } = await supabase
+        .from('pending_customers')
+        .select('loan_id, checked, checked_at')
+        .eq('checked', true)
+        .gte('checked_at', new Date().toISOString().split('T')[0]) // Today's collections
+      
+      if (!collectedErr && collected) {
+        console.log('Loaded collected customers from pending_customers:', collected)
+      }
+    } catch (error) {
+      console.error('Failed to load collected customers:', error)
+    }
+  }
+
+  // Handle batch session end - increment COUNT for unchecked customers
+  const handleBatchSessionEnd = async () => {
+    if (collectionType === 'batch' && collectionTarget) {
+      const batch = collectionTarget as WeeklyBatch
+      const uncheckedCustomers = loans.filter(l => l.weekly_batch === batch.day && !batchSelectIds[l.id])
+
+      if (uncheckedCustomers.length === 0) return
+
+      console.log('Processing unchecked customers:', uncheckedCustomers.map(l => l.customer?.name))
+
+      // Filter out customers already processed in this session
+      const newUncheckedCustomers = uncheckedCustomers.filter(loan => !processedInSession.has(loan.id))
+      console.log('New unchecked customers (not processed this session):', newUncheckedCustomers.map(l => l.customer?.name))
+
+      // For each unchecked customer: insert new row or increment pending_count in Supabase
+      for (const loan of newUncheckedCustomers) {
+        try {
+          // Check if already exists
+          const { data: existing, error: selErr } = await supabase
+            .from('pending_customers')
+            .select('id, pending_count')
+            .eq('loan_id', loan.id)
+            .maybeSingle()
+          if (selErr) console.warn('Select pending error', selErr)
+
+          const weeklyEmi = Math.round(computeWeeklyEmiForLoan(loan))
+
+          if (!existing) {
+            // Insert new
+            const { error: insErr } = await supabase.from('pending_customers').insert([{
+              loan_id: loan.id,
+              customer_id: loan.customer_id,
+              pending_count: 1,
+              emi_amount: weeklyEmi,
+              source: 'unchecked',
+              last_incremented_at: new Date().toISOString().slice(0,10)
+            }])
+            if (insErr) {
+              console.error('Insert pending error', insErr)
+            } else {
+              console.log(`Added new pending customer: ${loan.customer?.name} (COUNT = 1)`)
+              // Mark as processed in this session
+              setProcessedInSession(prev => {
+                const newSet = new Set(prev)
+                newSet.add(loan.id)
+                return newSet
+              })
+            }
+          } else {
+            // Increment existing
+            const { error: updErr } = await supabase
+              .from('pending_customers')
+              .update({
+                pending_count: (existing.pending_count || 0) + 1,
+                emi_amount: weeklyEmi,
+                source: 'unchecked',
+                last_incremented_at: new Date().toISOString().slice(0,10)
+              })
+              .eq('loan_id', loan.id)
+            if (updErr) {
+              console.error('Update pending error', updErr)
+            } else {
+              console.log(`Incremented pending customer: ${loan.customer?.name} (COUNT = ${(existing.pending_count || 0) + 1})`)
+              // Mark as processed in this session
+              setProcessedInSession(prev => {
+                const newSet = new Set(prev)
+                newSet.add(loan.id)
+                return newSet
+              })
+            }
+          }
+        } catch (e) {
+          console.error('Pending upsert loop error', e)
+        }
+      }
+
+      // Reload pending counts into local state
+      try {
+        const { data: pend, error: pendErr } = await supabase
+          .from('pending_customers')
+          .select('loan_id, pending_count, emi_amount')
+        if (!pendErr) {
+          const map: Record<string, { count: number, emi: number }> = {}
+          ;(pend || []).forEach(r => { map[r.loan_id] = { count: Number(r.pending_count || 0), emi: Number(r.emi_amount || 0) } })
+          setPendingCounts(map)
+          console.log('Updated pending counts after session end:', map)
+        }
+      } catch {}
+
+      try {
+        setIsSyncingWithDashboard(true)
+        const bc = new BroadcastChannel('collections')
+        bc.postMessage({
+          type: 'pending-session-closed',
+          at: Date.now(),
+          batch: { id: batch.id, day: batch.day, name: batch.name }
+        })
+        bc.close()
+        setTimeout(() => setIsSyncingWithDashboard(false), 1000)
+      } catch {}
+    }
+  }
+
+  // Compute base pending customers for the current week (no collection in this week)
+  const getBasePendingThisWeek = () => {
+    const { start, end } = getCurrentWeekRange()
+    const byId: Record<string, { loan: Loan, weeklyEmi: number }> = {}
+    loans.forEach(loan => {
+      const hasThisWeekCompleted = collections.some(c => {
+        if (c.loan_id !== loan.id) return false
+        const d = parseDateOnly(c.collection_date as any)
+        return d >= start && d <= end && String(c.status).toLowerCase() === 'completed'
+      })
+      if (!hasThisWeekCompleted) {
+        byId[loan.id] = { loan, weeklyEmi: computeWeeklyEmiFor(loan) }
+      }
+    })
+    return Object.values(byId)
+  }
+
+  const basePending = getBasePendingThisWeek()
+  // If batch modal is open, reflect live selections: unchecked in that batch are pending
+  const selectionPending = (showCollectionModal && collectionType === 'batch' && collectionTarget)
+    ? loans
+        .filter(l => l.weekly_batch === (collectionTarget as WeeklyBatch).day)
+        .filter(l => !batchSelectIds[l.id])
+        .map(l => {
+          const rateMap: { [k: string]: number } = { '8.33': 833, '6.33': 633, '12': 1200, '110': 11000, '115': 11500, '10': 1000, '25': 2500, '30': 3000, '111.11': 11111, '20': 2000 }
+          const r = l.interest_rate || '8.33'
+          const emiAmount = rateMap[r] || 833
+          const totalInterest = emiAmount * (l.number_of_weeks || 15)
+          const weeklyEmi = totalInterest / (l.number_of_weeks || 15)
+          return { loan: l, weeklyEmi }
+        })
+    : [] as { loan: Loan, weeklyEmi: number }[]
+  const mergedPendingMap: Record<string, { loan: Loan, weeklyEmi: number }> = {}
+  basePending.forEach(p => { mergedPendingMap[p.loan.id] = p })
+  selectionPending.forEach(p => { mergedPendingMap[p.loan.id] = p })
+  
+  // Get current week range for filtering
+  const { start: _wStart, end: _wEnd } = getCurrentWeekRange()
+  
+  // Filter logic: 
+  // 1. Show customers who have uncheck counts (from previous sessions)
+  // 2. Show customers who missed their weekly payments
+  // 3. Exclude customers who already have a collection this week
+  let mergedPending = Object.values(mergedPendingMap).filter(p => {
+    // Show if customer has stored pending count in Supabase
+    if (pendingCounts[p.loan.id] && pendingCounts[p.loan.id].count > 0) {
+      return true
+    }
+    
+    // For other cases, exclude if they already have a collection this week
+    return !collections.some(c => {
+      if (c.loan_id !== p.loan.id) return false
+      const d = parseDateOnly(c.collection_date as any)
+      return d >= _wStart && d <= _wEnd && String(c.status).toLowerCase() === 'completed'
+    })
+  })
+  
+  // Add customers with uncheck counts to pending list
+  loans.forEach(loan => {
+    const stored = pendingCounts[loan.id]
+    if (stored && stored.count > 0) {
+      // Prefer stored EMI when present
+      const weeklyEmi = stored.emi || computeWeeklyEmiFor(loan)
+      if (!mergedPending.find(p => p.loan.id === loan.id)) {
+        mergedPending.push({ loan, weeklyEmi })
+        console.log(`Added stored pending customer: ${loan.customer?.name} (COUNT = ${stored.count})`)
+      }
+    }
+  })
+  
+  // If operating within a specific batch collection modal, scope to that batch
+  if (showCollectionModal && collectionType === 'batch' && collectionTarget) {
+    const day = (collectionTarget as WeeklyBatch).day
+    mergedPending = mergedPending.filter(p => p.loan.weekly_batch === day)
+  }
+
+  // Apply optional batch filter for Pending Customers card
+  // Only show customers who have been unchecked (have pending counts)
+  const displayPending = mergedPending
+    .filter(p => {
+      // Only show if this customer has been unchecked (has pending count)
+      const hasPendingCount = !!(pendingCounts[p.loan.id] && pendingCounts[p.loan.id].count > 0)
+      return hasPendingCount
+    })
+    .filter(p => {
+      // Apply batch filter if specified
+      if (!pendingBatchFilter) return true
+      return (p.loan.weekly_batch || '').toLowerCase() === pendingBatchFilter
+    })
+
+  // Load data from Supabase
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        // Load collections with related data
+        const { data: collectionsData, error: collectionsError } = await supabase
+          .from('collections')
+          .select(`
+            *,
+            customer:customers(*),
+            loan:loans(*),
+            worker:employees(*)
+          `)
+          .order('collection_date', { ascending: true })
+          .order('created_at', { ascending: true })
+        
+        if (collectionsError) {
+          console.error('Error loading collections:', collectionsError)
+        } else {
+          setCollections(collectionsData || [])
+        }
+
+        // Load loans with related data
+        const { data: loansData, error: loansError } = await supabase
+          .from('loans')
+          .select(`
+            *,
+            customer:customers(*),
+            team_leader:employees(*)
+          `)
+        
+        if (loansError) {
+          console.error('Error loading loans:', loansError)
+        } else {
+          setLoans(loansData || [])
+        }
+
+        // Load pending customers counts from Supabase (only unchecked ones)
+        const { data: pend, error: pendErr } = await supabase
+          .from('pending_customers')
+          .select('loan_id, pending_count, emi_amount, checked')
+          .eq('checked', false) // Only load unchecked customers
+        if (pendErr) {
+          console.error('Error loading pending_customers:', pendErr)
+        } else {
+          const map: Record<string, { count: number, emi: number }> = {}
+          ;(pend || []).forEach(r => { 
+            if (!r.checked) { // Double check - only add unchecked customers
+              map[r.loan_id] = { count: Number(r.pending_count || 0), emi: Number(r.emi_amount || 0) } 
+            }
+          })
+          setPendingCounts(map)
+        }
+
+        // Load collected customers from Supabase
+        await loadCollectedCustomers()
+
+        // Load customers
+        const { data: customersData, error: customersError } = await supabase
+          .from('customers')
+          .select('*')
+        
+        if (customersError) {
+          console.error('Error loading customers:', customersError)
+        } else {
+          setCustomers(customersData || [])
+        }
+
+        // Load employees
+        const { data: employeesData, error: employeesError } = await supabase
+          .from('employees')
+          .select('*')
+        
+        if (employeesError) {
+          console.error('Error loading employees:', employeesError)
+        } else {
+          setEmployees(employeesData || [])
+        }
+
+      } catch (error) {
+        console.error('Error loading data:', error)
+      } finally {
+        setLoading(false)
+      }
+    }
+    loadData()
+    
+    // Refresh data every 2 seconds
+    const interval = setInterval(() => {
+      loadData()
+    }, 2000)
+    
+    return () => {
+      clearInterval(interval)
+    }
+  }, [])
+
+
+  // Generate weekly batches based on loans
+  useEffect(() => {
+    const generateWeeklyBatches = () => {
+      const batches: WeeklyBatch[] = [
+        {
+          id: 'tuesday',
+          day: 'tuesday',
+          name: 'Tuesday Batch',
+          total_collection: 0,
+          customer_count: 0,
+          target_amount: 100000,
+          completion_percentage: 0,
+          last_collection_date: '',
+          next_collection_date: getNextTuesday(),
+          status: 'active'
+        },
+        {
+          id: 'thursday',
+          day: 'thursday',
+          name: 'Thursday Batch',
+          total_collection: 0,
+          customer_count: 0,
+          target_amount: 100000,
+          completion_percentage: 0,
+          last_collection_date: '',
+          next_collection_date: getNextThursday(),
+          status: 'active'
+        },
+        {
+          id: 'friday',
+          day: 'friday',
+          name: 'Friday Batch',
+          total_collection: 0,
+          customer_count: 0,
+          target_amount: 100000,
+          completion_percentage: 0,
+          last_collection_date: '',
+          next_collection_date: getNextFriday(),
+          status: 'active'
+        }
+      ]
+
+      // Calculate batch data based on loans
+      loans.forEach(loan => {
+        if (loan.weekly_batch) {
+          const batch = batches.find(b => b.day === loan.weekly_batch)
+          if (batch) {
+            batch.customer_count += 1
+            batch.total_collection += loan.amount
+            batch.completion_percentage = (batch.total_collection / batch.target_amount) * 100
+          }
+        }
+      })
+
+      setWeeklyBatches(batches)
+    }
+
+    generateWeeklyBatches()
+  }, [loans])
+
+  const getNextTuesday = () => {
+    const today = new Date()
+    const dayOfWeek = today.getDay()
+    const daysUntilTuesday = (2 - dayOfWeek + 7) % 7
+    const nextTuesday = new Date(today)
+    nextTuesday.setDate(today.getDate() + daysUntilTuesday)
+    return nextTuesday.toISOString().split('T')[0]
+  }
+
+  const getNextThursday = () => {
+    const today = new Date()
+    const dayOfWeek = today.getDay()
+    const daysUntilThursday = (4 - dayOfWeek + 7) % 7
+    const nextThursday = new Date(today)
+    nextThursday.setDate(today.getDate() + daysUntilThursday)
+    return nextThursday.toISOString().split('T')[0]
+  }
+
+  const getNextFriday = () => {
+    const today = new Date()
+    const dayOfWeek = today.getDay()
+    const daysUntilFriday = (5 - dayOfWeek + 7) % 7
+    const nextFriday = new Date(today)
+    nextFriday.setDate(today.getDate() + daysUntilFriday)
+    return nextFriday.toISOString().split('T')[0]
+  }
+
+  const filteredCollections = collections
+    .filter(collection => {
+      const matchesSearch = collection.customer?.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                           collection.loan_id.includes(searchTerm)
+      const matchesDate = !dateFilter || collection.collection_date === dateFilter
+      const matchesWorker = !workerFilter || collection.worker_id === workerFilter
+      const matchesStatus = statusFilter === 'all' || collection.status === statusFilter
+      
+      return matchesSearch && matchesDate && matchesWorker && matchesStatus
+    })
+    .sort((a, b) => {
+      // First sort by customer name
+      const customerA = a.customer?.name || ''
+      const customerB = b.customer?.name || ''
+      if (customerA !== customerB) return customerA.localeCompare(customerB)
+      
+      // Then sort by collection date
+      const dateA = new Date(a.collection_date).getTime()
+      const dateB = new Date(b.collection_date).getTime()
+      if (dateA !== dateB) return dateA - dateB
+      
+      // Finally sort by creation time
+      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    })
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'completed': return 'bg-green-100 text-green-800'
+      case 'partial': return 'bg-yellow-100 text-yellow-800'
+      case 'pending': return 'bg-blue-100 text-blue-800'
+      default: return 'bg-gray-100 text-gray-800'
+    }
+  }
+
+  const handleViewDetails = (collection: Collection) => {
+    setSelectedCollection(collection)
+    setShowDetailsModal(true)
+  }
+
+  const handleExport = () => {
+    exportCollections(collections)
+  }
+
+  const handleViewBatchDetails = (batch: WeeklyBatch) => {
+    setSelectedBatch(batch)
+    setShowBatchModal(true)
+  }
+
+  const handleViewWorkerDetails = (worker: Employee) => {
+    setSelectedWorker(worker)
+    setShowWorkerModal(true)
+  }
+
+  const getBatchLoans = (batchDay: string) => {
+    return loans.filter(loan => loan.weekly_batch === batchDay)
+  }
+
+  const getWorkerLoans = (workerId: string) => {
+    return loans.filter(loan => loan.team_leader_id === workerId)
+  }
+
+  const getWorkerName = (teamLeaderId?: string): string => {
+    if (!teamLeaderId) return 'N/A'
+    const worker = employees.find(emp => emp.id === teamLeaderId)
+    return worker?.name || 'N/A'
+  }
+
+  const calculateWeeklyEMI = (batchDay: string): number => {
+    const batchLoans = getBatchLoans(batchDay)
+    let totalWeeklyEMI = 0
+    
+    batchLoans.forEach(loan => {
+      // Calculate EMI based on interest rate
+      const interestRateMapping: { [key: string]: number } = {
+        '8.33': 833, '6.33': 633, '12': 1200, '110': 11000, '115': 11500,
+        '10': 1000, '25': 2500, '30': 3000, '111.11': 11111, '20': 2000
+      }
+      const interestRate = loan.interest_rate || '8.33'
+      const emiAmount = interestRateMapping[interestRate] || 833
+      const totalInterest = emiAmount * (loan.number_of_weeks || 15)
+      const totalAmount = totalInterest
+      const weeklyEMI = totalAmount / (loan.number_of_weeks || 15)
+      
+      totalWeeklyEMI += weeklyEMI
+    })
+    
+    return totalWeeklyEMI
+  }
+
+  const computeWeeklyEmiForLoan = (loan: Loan) => {
+    const interestRateMapping: { [key: string]: number } = {
+      '8.33': 833, '6.33': 633, '12': 1200, '110': 11000, '115': 11500,
+      '10': 1000, '25': 2500, '30': 3000, '111.11': 11111, '20': 2000
+    }
+    const r = loan.interest_rate || '8.33'
+    const emiAmount = interestRateMapping[r] || 833
+    const totalInterest = emiAmount * (loan.number_of_weeks || 15)
+    return totalInterest / (loan.number_of_weeks || 15)
+  }
+
+    const handleCollectAmount = (type: 'batch' | 'worker', target: WeeklyBatch | Employee) => {
+    setCollectionType(type)
+    setCollectionTarget(target)
+    // Preselect all customers for the selected batch by default
+    if (type === 'batch') {
+      const batch = target as WeeklyBatch
+      const base = getBatchLoans(batch.day)
+      const map: Record<string, boolean> = {}
+      base.forEach(l => { map[l.id] = true })
+      setBatchSelectIds(map)
+    }
+    setProcessedInSession(new Set()) // Clear processed session for new batch
+    setShowCollectionModal(true)
+  }
+
+  const getWeeklyEMIForBatch = (batchDay: string): number => {
+    return calculateWeeklyEMI(batchDay)
+  }
+
+  // Function to calculate correct remaining balance for a collection
+  const calculateCorrectRemainingBalance = (collection: Collection): number => {
+    if (!collection.loan) return 0
+
+    // Calculate EMI for this loan
+    const interestRateMapping: { [key: string]: number } = {
+      '8.33': 833, '6.33': 633, '12': 1200, '110': 11000, '115': 11500,
+      '10': 1000, '25': 2500, '30': 3000, '111.11': 11111, '20': 2000
+    }
+    const interestRate = collection.loan.interest_rate || '8.33'
+    const emiAmount = interestRateMapping[interestRate] || 833
+    const totalInterest = emiAmount * (collection.loan.number_of_weeks || 15)
+    const totalAmount = totalInterest
+
+    // Get all collections for this loan, sorted by date and then by creation time
+    const loanCollections = collections
+      .filter(c => c.loan_id === collection.loan_id)
+      .sort((a, b) => {
+        // First sort by date
+        const dateA = new Date(a.collection_date).getTime()
+        const dateB = new Date(b.collection_date).getTime()
+        if (dateA !== dateB) return dateA - dateB
+        
+        // If same date, sort by creation time
+        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      })
+
+    // Find the index of current collection
+    const currentIndex = loanCollections.findIndex(c => c.id === collection.id)
+    
+    // Calculate total collected up to and including this collection
+    const totalCollected = loanCollections
+      .slice(0, currentIndex + 1)
+      .reduce((sum, c) => sum + c.amount_collected, 0)
+
+    // Return remaining balance after this collection
+    return Math.max(0, totalAmount - totalCollected)
+  }
+
+  // Function to calculate current remaining balance for a loan (for stats)
+  const calculateCurrentLoanBalance = (loanId: string): number => {
+    const loan = loans.find(l => l.id === loanId)
+    if (!loan) return 0
+
+    // Calculate EMI for this loan
+    const interestRateMapping: { [key: string]: number } = {
+      '8.33': 833, '6.33': 633, '12': 1200, '110': 11000, '115': 11500,
+      '10': 1000, '25': 2500, '30': 3000, '111.11': 11111, '20': 2000
+    }
+    const interestRate = loan.interest_rate || '8.33'
+    const emiAmount = interestRateMapping[interestRate] || 833
+    const totalInterest = emiAmount * (loan.number_of_weeks || 15)
+    const totalAmount = totalInterest
+
+    // Get all collections for this loan
+    const loanCollections = collections.filter(c => c.loan_id === loanId)
+    const totalCollected = loanCollections.reduce((sum, c) => sum + c.amount_collected, 0)
+
+    return Math.max(0, totalAmount - totalCollected)
+  }
+
+  // Utility function to recalculate remaining balances for all collections
+  const recalculateAllRemainingBalances = async () => {
+    try {
+      // Get all loans with their collections
+      const { data: loans, error: loansError } = await supabase
+        .from('loans')
+        .select(`
+          *,
+          collections(*)
+        `)
+
+      if (loansError) {
+        console.error('Error fetching loans:', loansError)
+        return
+      }
+
+      for (const loan of loans || []) {
+        if (!loan.collections || loan.collections.length === 0) continue
+
+        // Calculate EMI for this loan
+        const interestRateMapping: { [key: string]: number } = {
+          '8.33': 833, '6.33': 633, '12': 1200, '110': 11000, '115': 11500,
+          '10': 1000, '25': 2500, '30': 3000, '111.11': 11111, '20': 2000
+        }
+        const interestRate = loan.interest_rate || '8.33'
+        const emiAmount = interestRateMapping[interestRate] || 833
+        const totalInterest = emiAmount * (loan.number_of_weeks || 15)
+        const totalAmount = totalInterest
+
+        // Sort collections by date
+        const sortedCollections = loan.collections.sort((a: any, b: any) => 
+          new Date(a.collection_date).getTime() - new Date(b.collection_date).getTime()
+        )
+
+        let cumulativeCollected = 0
+
+        // Update each collection's remaining balance
+        for (const collection of sortedCollections) {
+          cumulativeCollected += collection.amount_collected
+          const remainingBalance = Math.max(0, totalAmount - cumulativeCollected)
+
+          // Update the collection in the database
+          const { error: updateError } = await supabase
+            .from('collections')
+            .update({ remaining_balance: remainingBalance })
+            .eq('id', collection.id)
+
+          if (updateError) {
+            console.error('Error updating collection:', updateError)
+          }
+        }
+      }
+
+      // Refresh the collections data
+      const { data: updatedCollections, error: refreshError } = await supabase
+        .from('collections')
+        .select(`
+          *,
+          customer:customers(*),
+          loan:loans(*),
+          worker:employees(*)
+        `)
+        .order('collection_date', { ascending: false })
+
+      if (refreshError) {
+        console.error('Error refreshing collections:', refreshError)
+      } else {
+        setCollections(updatedCollections || [])
+      }
+      
+      alert('All remaining balances have been recalculated successfully!')
+    } catch (error) {
+      console.error('Error recalculating remaining balances:', error)
+      alert('Error recalculating remaining balances. Please try again.')
+    }
+  }
+
+  const handleSubmitCollection = async (amount: number, notes: string) => {
+    if (!collectionType || !collectionTarget || collectionType !== 'batch') return
+
+    const batch = collectionTarget as WeeklyBatch
+    const weeklyEMI = getWeeklyEMIForBatch(batch.day)
+    
+    // Create individual collection records for each loan in the batch
+    const batchLoans = getBatchLoans(batch.day)
+    const newCollections: any[] = []
+
+    for (const loan of batchLoans) {
+      // Calculate EMI for this specific loan
+      const interestRateMapping: { [key: string]: number } = {
+        '8.33': 833, '6.33': 633, '12': 1200, '110': 11000, '115': 11500,
+        '10': 1000, '25': 2500, '30': 3000, '111.11': 11111, '20': 2000
+      }
+      const interestRate = loan.interest_rate || '8.33'
+      const emiAmount = interestRateMapping[interestRate] || 833
+      const totalInterest = emiAmount * (loan.number_of_weeks || 15)
+      const totalAmount = totalInterest
+      const weeklyEMIForLoan = totalAmount / (loan.number_of_weeks || 15)
+      
+      // Calculate proportional amount based on loan's EMI
+      const proportionalAmount = (weeklyEMIForLoan / weeklyEMI) * amount
+
+      // Get all previous collections for this loan to calculate cumulative remaining balance
+      const { data: previousCollections, error: prevError } = await supabase
+        .from('collections')
+        .select('amount_collected')
+        .eq('loan_id', loan.id)
+        .order('collection_date', { ascending: true })
+
+      if (prevError) {
+        console.error('Error fetching previous collections:', prevError)
+        continue
+      }
+
+      // Calculate total amount collected so far
+      const totalCollectedSoFar = previousCollections?.reduce((sum, col) => sum + col.amount_collected, 0) || 0
+      
+      // Calculate remaining balance: total loan amount - (previous collections + current collection)
+      const remainingBalance = Math.max(0, totalAmount - (totalCollectedSoFar + proportionalAmount))
+
+      const newCollection = {
+        loan_id: loan.id,
+        customer_id: loan.customer_id,
+        worker_id: loan.team_leader_id || null,
+        amount_collected: proportionalAmount,
+        remaining_balance: remainingBalance,
+        collection_date: new Date().toISOString().split('T')[0],
+        status: proportionalAmount >= weeklyEMIForLoan ? 'completed' : 'partial',
+        notes: `${notes} (Batch: ${batch.name})`
+      }
+
+      newCollections.push(newCollection)
+    }
+
+    try {
+      // Insert collections into Supabase
+      const { data, error } = await supabase
+        .from('collections')
+        .insert(newCollections)
+        .select(`
+          *,
+          customer:customers(*),
+          loan:loans(*),
+          worker:employees(*)
+        `)
+
+      if (error) {
+        console.error('Error inserting collections:', error)
+        alert('Error saving collections. Please try again.')
+        return
+      }
+
+      // Update local state
+      setCollections(prev => [...prev, ...(data || [])])
+
+      // Check for loans that should be closed (remaining balance = 0)
+      for (const collection of data || []) {
+        const remainingBalance = (collection as any).remaining_balance || 0
+        if (remainingBalance <= 0) {
+          // Close the loan
+          const { error: closeError } = await supabase
+            .from('loans')
+            .update({ status: 'closed' })
+            .eq('id', collection.loan_id)
+          
+          if (closeError) {
+            console.error('Error closing loan:', closeError)
+          } else {
+            console.log(`Loan ${collection.loan_id} closed - customer has paid full amount`)
+            
+            // Delete the customer since loan is fully paid
+            try {
+              const { error: deleteCustomerError } = await supabase
+                .from('customers')
+                .delete()
+                .eq('id', collection.customer_id)
+
+              if (deleteCustomerError) {
+                console.error('Error deleting customer:', deleteCustomerError)
+                alert('Error deleting customer. Please try again.')
+              } else {
+                console.log(`Customer ${collection.customer_id} deleted - loan fully paid`)
+                alert('Customer has been automatically deleted as the loan is fully paid!')
+              }
+            } catch (deleteErr) {
+              console.error('Unexpected error deleting customer:', deleteErr)
+              alert('Error deleting customer. Please try again.')
+            }
+          }
+        }
+      }
+
+      // Refresh loans data to get updated status
+      const { data: loansData } = await supabase
+        .from('loans')
+        .select(`*, customer:customers(*), team_leader:employees(*)`)
+      setLoans(loansData || [])
+
+      // Broadcast update so Dashboard pending card updates immediately
+      try {
+        const bc = new BroadcastChannel('collections')
+        bc.postMessage({
+          type: 'collections-updated',
+          at: Date.now(),
+          batch: { id: batch.id, day: batch.day, name: batch.name, collectedCount: (data || []).length },
+          pending: []
+        })
+        bc.close()
+      } catch {}
+
+      // Close modal
+      setShowCollectionModal(false)
+      setCollectionType(null)
+      setCollectionTarget(null)
+
+      alert(`Successfully collected ₹${amount.toLocaleString()} for ${batch.name} (${batchLoans.length} customers)`)
+    } catch (error) {
+      console.error('Error submitting collection:', error)
+      alert('Error submitting collection. Please try again.')
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="spinner w-8 h-8"></div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 p-6 space-y-8">
+      {/* Header */}
+      <div className="bg-white/90 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/30 p-8 animate-fade-in relative overflow-hidden">
+        {/* Background decoration */}
+        <div className="absolute top-0 right-0 w-64 h-64 bg-gradient-to-br from-purple-400/20 to-pink-400/20 rounded-full -translate-y-32 translate-x-32"></div>
+        <div className="absolute bottom-0 left-0 w-48 h-48 bg-gradient-to-tr from-blue-400/20 to-indigo-400/20 rounded-full translate-y-24 -translate-x-24"></div>
+        
+        <div className="relative z-10 flex items-center justify-between">
+          <div className="flex items-center space-x-6">
+            <button
+              onClick={onBack}
+              className="group flex items-center space-x-2 px-4 py-2 rounded-xl bg-gradient-to-r from-gray-100 to-gray-200 hover:from-gray-200 hover:to-gray-300 transition-all duration-300 hover:scale-105 shadow-lg hover:shadow-xl"
+            >
+              <span className="text-xl group-hover:-translate-x-1 transition-transform duration-300">←</span>
+              <span className="font-medium text-gray-700">Back</span>
+            </button>
+            <div>
+              <h1 className="text-5xl font-bold bg-gradient-to-r from-purple-600 via-blue-600 to-indigo-600 bg-clip-text text-transparent">
+                Collections
+              </h1>
+              <p className="text-gray-600 mt-2 text-lg">Manage loan collections and repayments efficiently</p>
+            </div>
+          </div>
+          <div className="flex items-center space-x-4">
+            <button
+              onClick={recalculateAllRemainingBalances}
+              className="group flex items-center space-x-2 px-6 py-3 rounded-xl bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600 text-white font-medium transition-all duration-300 hover:scale-105 shadow-lg hover:shadow-xl"
+            >
+              <TrendingUp className="w-5 h-5 group-hover:rotate-12 transition-transform duration-300" />
+              <span>Recalculate</span>
+            </button>
+            <button
+              onClick={handleExport}
+              className="group flex items-center space-x-2 px-6 py-3 rounded-xl bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white font-medium transition-all duration-300 hover:scale-105 shadow-lg hover:shadow-xl"
+            >
+              <Download className="w-5 h-5 group-hover:translate-y-1 transition-transform duration-300" />
+              <span>Export</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Stats Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        {/* Total Collections Card */}
+        <div className="group relative bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl p-6 shadow-xl hover:shadow-2xl transition-all duration-300 hover:scale-105 overflow-hidden">
+          <div className="absolute top-0 right-0 w-20 h-20 bg-white/10 rounded-full -translate-y-10 translate-x-10"></div>
+          <div className="absolute bottom-0 left-0 w-16 h-16 bg-white/5 rounded-full translate-y-8 -translate-x-8"></div>
+          <div className="relative z-10">
+            <div className="flex items-center justify-between mb-4">
+              <div className="p-3 bg-white/20 rounded-xl backdrop-blur-sm">
+                <CreditCard className="w-6 h-6 text-white" />
+              </div>
+              <div className="text-right">
+                <p className="text-white/80 text-sm font-medium">Total Collections</p>
+                <p className="text-3xl font-bold text-white">{collections.length}</p>
+              </div>
+            </div>
+            <div className="flex items-center text-white/90 text-sm">
+              <span className="w-2 h-2 bg-white/60 rounded-full mr-2"></span>
+              Active collections
+            </div>
+          </div>
+        </div>
+
+        {/* Amount Collected Card */}
+        <div className="group relative bg-gradient-to-br from-emerald-500 to-green-600 rounded-2xl p-6 shadow-xl hover:shadow-2xl transition-all duration-300 hover:scale-105 overflow-hidden">
+          <div className="absolute top-0 right-0 w-20 h-20 bg-white/10 rounded-full -translate-y-10 translate-x-10"></div>
+          <div className="absolute bottom-0 left-0 w-16 h-16 bg-white/5 rounded-full translate-y-8 -translate-x-8"></div>
+          <div className="relative z-10">
+            <div className="flex items-center justify-between mb-4">
+              <div className="p-3 bg-white/20 rounded-xl backdrop-blur-sm">
+                <TrendingUp className="w-6 h-6 text-white" />
+              </div>
+              <div className="text-right">
+                <p className="text-white/80 text-sm font-medium">Amount Collected</p>
+                <p className="text-2xl font-bold text-white">
+                  {formatCurrency(collections.reduce((sum, c) => sum + c.amount_collected, 0))}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center text-white/90 text-sm">
+              <span className="w-2 h-2 bg-white/60 rounded-full mr-2"></span>
+              Total revenue
+            </div>
+          </div>
+        </div>
+
+        {/* Pending Balance Card */}
+        <div className="group relative bg-gradient-to-br from-amber-500 to-orange-600 rounded-2xl p-6 shadow-xl hover:shadow-2xl transition-all duration-300 hover:scale-105 overflow-hidden">
+          <div className="absolute top-0 right-0 w-20 h-20 bg-white/10 rounded-full -translate-y-10 translate-x-10"></div>
+          <div className="absolute bottom-0 left-0 w-16 h-16 bg-white/5 rounded-full translate-y-8 -translate-x-8"></div>
+          <div className="relative z-10">
+            <div className="flex items-center justify-between mb-4">
+              <div className="p-3 bg-white/20 rounded-xl backdrop-blur-sm">
+                <span className="text-2xl text-white font-bold">₹</span>
+              </div>
+              <div className="text-right">
+                <p className="text-white/80 text-sm font-medium">Pending Balance</p>
+                <p className="text-2xl font-bold text-white">
+                  {formatCurrency(
+                    loans.reduce((sum, loan) => {
+                      const currentBalance = calculateCurrentLoanBalance(loan.id)
+                      return sum + currentBalance
+                    }, 0)
+                  )}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center text-white/90 text-sm">
+              <span className="w-2 h-2 bg-white/60 rounded-full mr-2"></span>
+              Outstanding amount
+            </div>
+          </div>
+        </div>
+
+        {/* Completion Rate Card */}
+        <div className="group relative bg-gradient-to-br from-purple-500 to-pink-600 rounded-2xl p-6 shadow-xl hover:shadow-2xl transition-all duration-300 hover:scale-105 overflow-hidden">
+          <div className="absolute top-0 right-0 w-20 h-20 bg-white/10 rounded-full -translate-y-10 translate-x-10"></div>
+          <div className="absolute bottom-0 left-0 w-16 h-16 bg-white/5 rounded-full translate-y-8 -translate-x-8"></div>
+          <div className="relative z-10">
+            <div className="flex items-center justify-between mb-4">
+              <div className="p-3 bg-white/20 rounded-xl backdrop-blur-sm">
+                <FileText className="w-6 h-6 text-white" />
+              </div>
+              <div className="text-right">
+                <p className="text-white/80 text-sm font-medium">Completion Rate</p>
+                <p className="text-3xl font-bold text-white">
+                  {collections.length > 0 
+                    ? Math.round((collections.filter(c => c.status === 'completed').length / collections.length) * 100)
+                    : 0}%
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center text-white/90 text-sm">
+              <span className="w-2 h-2 bg-white/60 rounded-full mr-2"></span>
+              Success rate
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Pending Customers Card (Collections page) */}
+      <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-xl border border-white/30 p-6 relative overflow-hidden">
+        {/* Background decoration */}
+        <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-red-400/10 to-pink-400/10 rounded-full -translate-y-16 translate-x-16"></div>
+        
+        <div className="relative z-10">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center space-x-4">
+              <div className="p-3 bg-gradient-to-r from-red-500 to-pink-500 rounded-xl">
+                <User className="w-6 h-6 text-white" />
+              </div>
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900 flex items-center space-x-3">
+                  Pending Customers
+                  <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-bold bg-gradient-to-r from-red-500 to-pink-500 text-white shadow-lg">
+                    {displayPending.length}
+                  </span>
+                </h2>
+                <p className="text-gray-600 mt-1">Customers with outstanding payments</p>
+                {isSyncingWithDashboard && (
+                  <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 mt-2">
+                    <div className="w-2 h-2 bg-blue-500 rounded-full mr-2 animate-pulse"></div>
+                    Syncing with Dashboard...
+                  </span>
+                )}
+                {showCollectionModal && collectionType === 'batch' && collectionTarget && (
+                  <span className="text-sm text-gray-600 mt-2 block">
+                    for {(collectionTarget as WeeklyBatch).name} (including unchecked customers)
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center space-x-3">
+              <button
+                onClick={refreshPendingCustomers}
+                className="group flex items-center space-x-2 px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-xl transition-all duration-300 hover:scale-105 shadow-lg hover:shadow-xl"
+                title="Refresh pending customers"
+              >
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin group-hover:animate-none"></div>
+                <span className="font-medium">Refresh</span>
+              </button>
+              <div className="flex items-center space-x-2">
+                <label className="text-sm font-medium text-gray-700">Filter by Batch</label>
+                <select
+                  className="border border-gray-300 rounded-xl text-sm px-3 py-2 bg-white/80 backdrop-blur-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300"
+                  value={pendingBatchFilter}
+                  onChange={(e) => setPendingBatchFilter(e.target.value)}
+                >
+                  <option value="">All Batches</option>
+                  <option value="tuesday">Tuesday</option>
+                  <option value="thursday">Thursday</option>
+                  <option value="friday">Friday</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        {displayPending.length === 0 ? (
+          <div className="text-center py-12">
+            <div className="w-16 h-16 bg-gradient-to-r from-gray-100 to-gray-200 rounded-full flex items-center justify-center mx-auto mb-4">
+              <User className="w-8 h-8 text-gray-400" />
+            </div>
+            <p className="text-lg font-medium text-gray-500">No pending customers for this week</p>
+            <p className="text-sm text-gray-400 mt-1">All customers are up to date with their payments</p>
+          </div>
+        ) : (
+          <div>
+            {/* Desktop/Table view */}
+            <div className="overflow-x-auto hidden sm:block rounded-xl border border-gray-200/50">
+              <table className="min-w-full divide-y divide-gray-200/50">
+              <thead className="bg-gradient-to-r from-gray-50 to-gray-100">
+                <tr>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">Customer</th>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">Batch</th>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">Weekly EMI</th>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">Total Payable</th>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">COUNT</th>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">Pending Amount</th>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">Status</th>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">Action</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white/50 backdrop-blur-sm divide-y divide-gray-200/50">
+                {displayPending.map(p => {
+                  // Check if this customer has stored pending count (from Supabase)
+                  const hasStoredPending = !!(pendingCounts[p.loan.id] && pendingCounts[p.loan.id].count > 0)
+                  
+                  // Use stored count if available, otherwise compute missed weeks
+                  const count = hasStoredPending ? computePendingCount(p.loan) : computePendingWeeks(p.loan)
+                  const weeklyEmi = p.weeklyEmi // Use exact weekly EMI amount
+                  const pendingAmount = weeklyEmi * count
+                  const totalPayable = (p.loan.number_of_weeks || 15) * weeklyEmi
+                  
+                  return (
+                    <tr key={p.loan.id} className={`group hover:bg-gradient-to-r hover:from-blue-50/50 hover:to-purple-50/50 transition-all duration-300 ${hasStoredPending ? 'bg-gradient-to-r from-yellow-50/50 to-amber-50/50' : 'bg-white/30'}`}>
+                      <td className="px-6 py-4 text-sm">
+                        <div className="flex items-center space-x-3">
+                          <div className="w-8 h-8 bg-gradient-to-r from-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white font-bold text-xs">
+                            {(p.loan.customer?.name || p.loan.customer_id).charAt(0).toUpperCase()}
+                          </div>
+                          <div>
+                            <div className="font-medium text-gray-900">
+                              {p.loan.customer?.name || p.loan.customer_id}
+                            </div>
+                            {hasStoredPending && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gradient-to-r from-yellow-400 to-amber-400 text-white shadow-sm">
+                                Unchecked
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 text-sm">
+                        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-gradient-to-r from-indigo-100 to-blue-100 text-indigo-800 capitalize">
+                          {p.loan.weekly_batch || '-'}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-sm font-semibold text-gray-900">{formatCurrency(weeklyEmi)}</td>
+                      <td className="px-6 py-4 text-sm font-semibold text-gray-900">{formatCurrency(totalPayable)}</td>
+                      <td className="px-6 py-4 text-sm">
+                        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-gradient-to-r from-purple-100 to-pink-100 text-purple-800">
+                          COUNT = {count}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-sm font-bold text-red-600">{formatCurrency(pendingAmount)}</td>
+                      <td className="px-6 py-4 text-sm">
+                        <span className={`inline-flex px-3 py-1 text-xs font-bold rounded-full ${
+                          hasStoredPending 
+                            ? 'bg-gradient-to-r from-yellow-400 to-amber-400 text-white' 
+                            : 'bg-gradient-to-r from-red-400 to-pink-400 text-white'
+                        }`}>
+                          {hasStoredPending ? 'Unchecked' : 'Pending'}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-sm">
+                        <button
+                          onClick={() => { setSelectedPending(p); setShowPendingDetailsModal(true) }}
+                          className="group/btn flex items-center space-x-2 px-4 py-2 bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white rounded-xl transition-all duration-300 font-medium shadow-lg hover:shadow-xl hover:scale-105 active:scale-95"
+                        >
+                          <span>View & Collect</span>
+                          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin group-hover/btn:animate-none"></div>
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+              </table>
+            </div>
+
+            {/* Mobile stacked cards */}
+            <div className="sm:hidden space-y-4">
+              {displayPending.map(p => {
+                // Check if this customer has stored pending count (from Supabase)
+                const hasStoredPending = !!(pendingCounts[p.loan.id] && pendingCounts[p.loan.id].count > 0)
+                
+                // Use stored count if available, otherwise compute missed weeks
+                const count = hasStoredPending ? computePendingCount(p.loan) : computePendingWeeks(p.loan)
+                const weeklyEmi = p.weeklyEmi // Use exact weekly EMI amount
+                const pendingAmount = weeklyEmi * count
+                const totalPayable = (p.loan.number_of_weeks || 15) * weeklyEmi
+                
+                return (
+                  <div key={p.loan.id} className={`group relative bg-white/80 backdrop-blur-sm rounded-2xl p-4 shadow-lg hover:shadow-xl transition-all duration-300 border ${
+                    hasStoredPending ? 'border-yellow-200/50 bg-gradient-to-r from-yellow-50/50 to-amber-50/50' : 'border-gray-200/50'
+                  }`}>
+                    {/* Background decoration */}
+                    <div className="absolute top-0 right-0 w-16 h-16 bg-gradient-to-br from-blue-400/10 to-purple-400/10 rounded-full -translate-y-8 translate-x-8"></div>
+                    
+                    <div className="relative z-10">
+                      <div className="flex items-start justify-between mb-4">
+                        <div className="flex items-center space-x-3">
+                          <div className="w-10 h-10 bg-gradient-to-r from-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white font-bold text-sm">
+                            {(p.loan.customer?.name || p.loan.customer_id).charAt(0).toUpperCase()}
+                          </div>
+                          <div>
+                            <div className="font-semibold text-gray-900">
+                              {p.loan.customer?.name || p.loan.customer_id}
+                            </div>
+                            <div className="text-xs text-gray-600 capitalize">Batch: {p.loan.weekly_batch || '-'}</div>
+                            {hasStoredPending && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gradient-to-r from-yellow-400 to-amber-400 text-white shadow-sm mt-1">
+                                Unchecked
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <span className={`inline-flex px-3 py-1 text-xs font-bold rounded-full ${
+                          hasStoredPending 
+                            ? 'bg-gradient-to-r from-yellow-400 to-amber-400 text-white' 
+                            : 'bg-gradient-to-r from-red-400 to-pink-400 text-white'
+                        }`}>
+                          {hasStoredPending ? 'Unchecked' : 'Pending'}
+                        </span>
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-4 mb-4">
+                        <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl p-3">
+                          <div className="text-xs font-medium text-gray-600 mb-1">Weekly EMI</div>
+                          <div className="text-sm font-bold text-gray-900">{formatCurrency(weeklyEmi)}</div>
+                        </div>
+                        <div className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-xl p-3">
+                          <div className="text-xs font-medium text-gray-600 mb-1">Total Payable</div>
+                          <div className="text-sm font-bold text-gray-900">{formatCurrency(totalPayable)}</div>
+                        </div>
+                        <div className="bg-gradient-to-r from-purple-50 to-pink-50 rounded-xl p-3">
+                          <div className="text-xs font-medium text-gray-600 mb-1">COUNT</div>
+                          <div className="text-sm font-bold text-gray-900">= {count}</div>
+                        </div>
+                        <div className="bg-gradient-to-r from-red-50 to-pink-50 rounded-xl p-3">
+                          <div className="text-xs font-medium text-gray-600 mb-1">Pending Amount</div>
+                          <div className="text-sm font-bold text-red-600">{formatCurrency(pendingAmount)}</div>
+                        </div>
+                      </div>
+                      
+                      <button
+                        onClick={() => { setSelectedPending(p); setShowPendingDetailsModal(true) }}
+                        className="group/btn w-full flex items-center justify-center space-x-2 px-4 py-3 bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white rounded-xl transition-all duration-300 font-medium shadow-lg hover:shadow-xl hover:scale-105 active:scale-95"
+                      >
+                        <span>View & Collect</span>
+                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin group-hover/btn:animate-none"></div>
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+        </div>
+      </div>
+
+      {/* Weekly Collection Batches */}
+      <div className="mb-8">
+        <div className="flex items-center space-x-4 mb-6">
+          <div className="p-3 bg-gradient-to-r from-indigo-500 to-purple-500 rounded-xl">
+            <Calendar className="w-6 h-6 text-white" />
+          </div>
+          <div>
+            <h2 className="text-3xl font-bold text-gray-900">Weekly Collection Batches</h2>
+            <p className="text-gray-600 mt-1">Manage weekly collection schedules and targets</p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {weeklyBatches.map((batch, index) => {
+            const colors = [
+              'from-blue-500 to-indigo-600',
+              'from-emerald-500 to-green-600', 
+              'from-purple-500 to-pink-600'
+            ]
+            const bgColors = colors[index % colors.length]
+            
+            return (
+              <div key={batch.id} className="group relative bg-white/90 backdrop-blur-xl rounded-2xl p-6 shadow-xl hover:shadow-2xl transition-all duration-300 hover:scale-105 border border-white/30 overflow-hidden">
+                {/* Background decoration */}
+                <div className={`absolute top-0 right-0 w-24 h-24 bg-gradient-to-br ${bgColors} opacity-10 rounded-full -translate-y-12 translate-x-12`}></div>
+                <div className="absolute bottom-0 left-0 w-16 h-16 bg-gradient-to-tr from-gray-400/10 to-gray-500/10 rounded-full translate-y-8 -translate-x-8"></div>
+                
+                <div className="relative z-10">
+                  <div className="flex items-center justify-between mb-6">
+                    <div className="flex items-center space-x-3">
+                      <div className={`p-3 bg-gradient-to-r ${bgColors} rounded-xl shadow-lg`}>
+                        <Calendar className="w-6 h-6 text-white" />
+                      </div>
+                      <div>
+                        <h3 className="text-xl font-bold text-gray-900">{batch.name}</h3>
+                        <p className="text-sm text-gray-600">Next: {batch.next_collection_date}</p>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-4 mb-6">
+                    <div className="bg-gradient-to-r from-gray-50 to-gray-100 rounded-xl p-4">
+                      <div className="text-xs font-medium text-gray-600 mb-1">Total Collection</div>
+                      <div className="text-lg font-bold text-gray-900">{formatCurrency(batch.total_collection)}</div>
+                    </div>
+                    <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl p-4">
+                      <div className="text-xs font-medium text-gray-600 mb-1">Customers</div>
+                      <div className="text-lg font-bold text-gray-900">{batch.customer_count}</div>
+                    </div>
+                  </div>
+
+                  <div className="flex space-x-3">
+                    <button
+                      onClick={() => handleCollectAmount('batch', batch)}
+                      className="group/btn flex-1 flex items-center justify-center space-x-2 bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white font-medium py-3 px-4 rounded-xl transition-all duration-300 shadow-lg hover:shadow-xl hover:scale-105 active:scale-95"
+                    >
+                      <span>Collect Amount</span>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin group-hover/btn:animate-none"></div>
+                    </button>
+                    <button
+                      onClick={() => handleViewBatchDetails(batch)}
+                      className="group/btn flex-1 flex items-center justify-center space-x-2 bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white font-medium py-3 px-4 rounded-xl transition-all duration-300 shadow-lg hover:shadow-xl hover:scale-105 active:scale-95"
+                    >
+                      <span>View Details</span>
+                      <Eye className="w-4 h-4 group-hover/btn:scale-110 transition-transform duration-300" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Worker Performance Summary */}
+      <div className="mb-8">
+        <div className="flex items-center space-x-4 mb-6">
+          <div className="p-3 bg-gradient-to-r from-orange-500 to-red-500 rounded-xl">
+            <User className="w-6 h-6 text-white" />
+          </div>
+          <div>
+            <h2 className="text-3xl font-bold text-gray-900">Worker Performance Summary</h2>
+            <p className="text-gray-600 mt-1">Track team performance and individual contributions</p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          {employees.map((worker, index) => {
+            const workerLoans = getWorkerLoans(worker.id)
+            const totalAmount = workerLoans.reduce((sum, loan) => sum + loan.amount, 0)
+            const customerCount = workerLoans.length
+            
+            const colors = [
+              'from-blue-500 to-indigo-600',
+              'from-emerald-500 to-green-600',
+              'from-purple-500 to-pink-600',
+              'from-orange-500 to-red-600'
+            ]
+            const bgColors = colors[index % colors.length]
+            
+            return (
+              <div key={worker.id} className="group relative bg-white/90 backdrop-blur-xl rounded-2xl p-6 shadow-xl hover:shadow-2xl transition-all duration-300 hover:scale-105 border border-white/30 overflow-hidden">
+                {/* Background decoration */}
+                <div className={`absolute top-0 right-0 w-20 h-20 bg-gradient-to-br ${bgColors} opacity-10 rounded-full -translate-y-10 translate-x-10`}></div>
+                <div className="absolute bottom-0 left-0 w-16 h-16 bg-gradient-to-tr from-gray-400/10 to-gray-500/10 rounded-full translate-y-8 -translate-x-8"></div>
+                
+                <div className="relative z-10">
+                  <div className="flex items-center space-x-3 mb-6">
+                    <div className={`p-3 bg-gradient-to-r ${bgColors} rounded-xl shadow-lg`}>
+                      <User className="w-6 h-6 text-white" />
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-bold text-gray-900">{worker.name}</h3>
+                      <p className="text-sm text-gray-600">{worker.designation}</p>
+                    </div>
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-4 mb-6">
+                    <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl p-4">
+                      <div className="text-xs font-medium text-gray-600 mb-1">Customers</div>
+                      <div className="text-2xl font-bold text-gray-900">{customerCount}</div>
+                    </div>
+                    <div className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-xl p-4">
+                      <div className="text-xs font-medium text-gray-600 mb-1">Total Amount</div>
+                      <div className="text-sm font-bold text-gray-900">{formatCurrency(totalAmount)}</div>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => handleViewWorkerDetails(worker)}
+                    className="group/btn w-full flex items-center justify-center space-x-2 bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white font-medium py-3 px-4 rounded-xl transition-all duration-300 shadow-lg hover:shadow-xl hover:scale-105 active:scale-95"
+                  >
+                    <span>View Details</span>
+                    <Eye className="w-4 h-4 group-hover/btn:scale-110 transition-transform duration-300" />
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-xl border border-white/30 p-6 relative overflow-hidden">
+        {/* Background decoration */}
+        <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-indigo-400/10 to-purple-400/10 rounded-full -translate-y-16 translate-x-16"></div>
+        
+        <div className="relative z-10">
+          <div className="flex items-center space-x-3 mb-6">
+            <div className="p-2 bg-gradient-to-r from-indigo-500 to-purple-500 rounded-lg">
+              <Filter className="w-5 h-5 text-white" />
+            </div>
+            <h3 className="text-xl font-bold text-gray-900">Filters & Search</h3>
+          </div>
+          
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-2">Search</label>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Search by customer or loan ID..."
+                  className="w-full pl-12 pr-4 py-3 border border-gray-300 rounded-xl bg-white/80 backdrop-blur-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duration-300"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-2">Date</label>
+              <input
+                type="date"
+                value={dateFilter}
+                onChange={(e) => setDateFilter(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-xl bg-white/80 backdrop-blur-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duration-300"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-2">Worker</label>
+              <select
+                value={workerFilter}
+                onChange={(e) => setWorkerFilter(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-xl bg-white/80 backdrop-blur-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duration-300"
+              >
+                <option value="">All Workers</option>
+                {employees.map(emp => (
+                  <option key={emp.id} value={emp.id}>{emp.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-2">Status</label>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-xl bg-white/80 backdrop-blur-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duration-300"
+              >
+                <option value="all">All Status</option>
+                <option value="completed">Completed</option>
+                <option value="partial">Partial</option>
+                <option value="pending">Pending</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Collections Table */}
+      <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-xl border border-white/30 overflow-hidden relative">
+        {/* Background decoration */}
+        <div className="absolute top-0 right-0 w-40 h-40 bg-gradient-to-br from-green-400/10 to-blue-400/10 rounded-full -translate-y-20 translate-x-20"></div>
+        
+        <div className="relative z-10">
+          <div className="px-6 py-4 bg-gradient-to-r from-gray-50 to-gray-100 border-b border-gray-200/50">
+            <div className="flex items-center space-x-3">
+              <div className="p-2 bg-gradient-to-r from-green-500 to-emerald-500 rounded-lg">
+                <CreditCard className="w-5 h-5 text-white" />
+              </div>
+              <h3 className="text-xl font-bold text-gray-900">Collections History</h3>
+            </div>
+          </div>
+          
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200/50">
+              <thead className="bg-gradient-to-r from-gray-50 to-gray-100">
+                <tr>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">
+                    Collection ID
+                  </th>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">
+                    Customer
+                  </th>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">
+                    Loan Amount
+                  </th>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">
+                    Collected
+                  </th>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">
+                    Remaining
+                  </th>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">
+                    Collection Date
+                  </th>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">
+                    Worker
+                  </th>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">
+                    Status
+                  </th>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="bg-white/50 backdrop-blur-sm divide-y divide-gray-200/50">
+              {filteredCollections.length > 0 ? (
+                filteredCollections.map((collection) => (
+                  <tr key={collection.id} className="group hover:bg-gradient-to-r hover:from-blue-50/50 hover:to-purple-50/50 transition-all duration-300">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm">
+                      <div className="flex items-center space-x-2">
+                        <div className="w-8 h-8 bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full flex items-center justify-center text-white font-bold text-xs">
+                          {collection.id.slice(-2).toUpperCase()}
+                        </div>
+                        <span className="font-medium text-gray-900">{collection.id}</span>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="flex items-center space-x-3">
+                        <div className="w-10 h-10 bg-gradient-to-r from-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white font-bold text-sm">
+                          {(collection.customer?.name || 'N/A').charAt(0).toUpperCase()}
+                        </div>
+                        <div>
+                          <div className="text-sm font-semibold text-gray-900">
+                            {collection.customer?.name || 'N/A'}
+                          </div>
+                          <div className="text-sm text-gray-500">
+                            {collection.customer?.phone || 'N/A'}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
+                      {formatCurrency(collection.loan?.amount || 0)}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-green-600">
+                      {formatCurrency(collection.amount_collected)}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-orange-600">
+                      {formatCurrency(calculateCorrectRemainingBalance(collection))}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                      {formatDate(collection.collection_date)}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm">
+                      <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-gradient-to-r from-gray-100 to-gray-200 text-gray-800">
+                        {collection.worker?.name || 'Unassigned'}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className={`inline-flex px-3 py-1 text-xs font-bold rounded-full ${
+                        collection.status === 'completed' 
+                          ? 'bg-gradient-to-r from-green-400 to-emerald-400 text-white'
+                          : collection.status === 'partial'
+                          ? 'bg-gradient-to-r from-yellow-400 to-amber-400 text-white'
+                          : 'bg-gradient-to-r from-red-400 to-pink-400 text-white'
+                      }`}>
+                        {collection.status.charAt(0).toUpperCase() + collection.status.slice(1)}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                      <button
+                        onClick={() => handleViewDetails(collection)}
+                        className="group/btn flex items-center space-x-2 px-4 py-2 bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white rounded-xl transition-all duration-300 font-medium shadow-lg hover:shadow-xl hover:scale-105 active:scale-95"
+                      >
+                        <Eye className="w-4 h-4 group-hover/btn:scale-110 transition-transform duration-300" />
+                        <span>View Details</span>
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={9} className="px-6 py-16 text-center">
+                    <div className="flex flex-col items-center">
+                      <div className="w-20 h-20 bg-gradient-to-r from-gray-100 to-gray-200 rounded-full flex items-center justify-center mb-6">
+                        <CreditCard className="w-10 h-10 text-gray-400" />
+                      </div>
+                      <h3 className="text-xl font-bold text-gray-500 mb-2">No collections found</h3>
+                      <p className="text-sm text-gray-400">Try adjusting your filters or search criteria</p>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Collection Details Modal */}
+      {showDetailsModal && selectedCollection && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-2xl text-gray-900">Collection Details</h2>
+              <button
+                onClick={() => setShowDetailsModal(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+              <div className="bg-blue-50 p-4 rounded-lg">
+                <h3 className="text-lg text-blue-900 mb-2">Collection Summary</h3>
+                <p className="text-2xl text-blue-900">
+                  {formatCurrency(selectedCollection.amount_collected)}
+                </p>
+                <p className="text-sm text-blue-700">Amount Collected</p>
+              </div>
+              <div className="bg-green-50 p-4 rounded-lg">
+                <h3 className="text-lg text-green-900 mb-2">Remaining Balance</h3>
+                <p className="text-2xl text-green-900">
+                  {formatCurrency(selectedCollection.remaining_balance)}
+                </p>
+                <p className="text-sm text-green-700">Outstanding Amount</p>
+              </div>
+            </div>
+
+            <div className="mb-6">
+              <h3 className="text-lg text-gray-900 mb-4">Customer Information</h3>
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-sm text-gray-600">Customer Name</p>
+                    <p className="text-gray-900">{selectedCollection.customer?.name || 'N/A'}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-600">Phone Number</p>
+                    <p className="text-gray-900">{selectedCollection.customer?.phone || 'N/A'}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-600">Address</p>
+                    <p className="text-gray-900">{selectedCollection.customer?.address || 'N/A'}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-600">Assigned Worker</p>
+                    <p className="text-gray-900">{selectedCollection.worker?.name || 'Unassigned'}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                onClick={() => setShowDetailsModal(false)}
+                className="bg-gray-600 hover:bg-gray-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Batch Details Modal */}
+      {showBatchModal && selectedBatch && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-2xl text-gray-900">{selectedBatch.name} Details</h2>
+              <button
+                onClick={() => setShowBatchModal(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
+              <div className="bg-blue-50 p-4 rounded-lg">
+                <h3 className="text-lg text-blue-900 mb-2">Collection Summary</h3>
+                <p className="text-2xl text-blue-900">{formatCurrency(selectedBatch.total_collection)}</p>
+                <p className="text-sm text-blue-700">Total Collection</p>
+              </div>
+              <div className="bg-orange-50 p-4 rounded-lg">
+                <h3 className="text-lg text-orange-900 mb-2">Collection Amount</h3>
+                <p className="text-2xl text-orange-900">{formatCurrency(calculateWeeklyEMI(selectedBatch.day))}</p>
+                <p className="text-sm text-orange-700">Weekly EMI Total</p>
+              </div>
+              <div className="bg-green-50 p-4 rounded-lg">
+                <h3 className="text-lg text-green-900 mb-2">Customers</h3>
+                <p className="text-2xl text-green-900">{selectedBatch.customer_count}</p>
+                <p className="text-sm text-green-700">Active Customers</p>
+              </div>
+              <div className="bg-purple-50 p-4 rounded-lg">
+                <h3 className="text-lg text-purple-900 mb-2">Progress</h3>
+                <p className="text-2xl text-purple-900">{selectedBatch.completion_percentage.toFixed(1)}%</p>
+                <p className="text-sm text-purple-700">Target Completion</p>
+              </div>
+            </div>
+
+            <div className="mb-6">
+              <h3 className="text-lg text-gray-900 mb-4">Loans in this Batch</h3>
+              
+              {getBatchLoans(selectedBatch.day).length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Customer ID</th>
+                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Worker</th>
+                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Loan Amount</th>
+                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tenure</th>
+                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Interest Rate</th>
+                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">EMI</th>
+                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {getBatchLoans(selectedBatch.day).map((loan) => {
+                        // Calculate EMI based on interest rate
+                        const interestRateMapping: { [key: string]: number } = {
+                          '8.33': 833, '6.33': 633, '12': 1200, '110': 11000, '115': 11500,
+                          '10': 1000, '25': 2500, '30': 3000, '111.11': 11111, '20': 2000
+                        }
+                        const interestRate = loan.interest_rate || '8.33'
+                        const emiAmount = interestRateMapping[interestRate] || 833
+                        const totalInterest = emiAmount * (loan.number_of_weeks || 15)
+                        const totalAmount = totalInterest
+                        const weeklyEMI = totalAmount / (loan.number_of_weeks || 15)
+                        
+                        return (
+                          <tr key={loan.id} className="hover:bg-gray-50">
+                            <td className="px-3 py-4 whitespace-nowrap text-sm text-gray-900">
+                              {loan.customer_id}
+                            </td>
+                            <td className="px-3 py-4 whitespace-nowrap text-sm text-gray-900">
+                              {getWorkerName(loan.team_leader_id)}
+                            </td>
+                            <td className="px-3 py-4 whitespace-nowrap text-sm text-gray-900">
+                              {loan.customer?.name}
+                            </td>
+                            <td className="px-3 py-4 whitespace-nowrap text-sm text-gray-900">
+                              {formatCurrency(loan.amount)}
+                            </td>
+                            <td className="px-3 py-4 whitespace-nowrap text-sm text-gray-900">
+                              {loan.number_of_weeks || 15} weeks
+                            </td>
+                            <td className="px-3 py-4 whitespace-nowrap text-sm text-gray-900">
+                              {interestRate}%
+                            </td>
+                            <td className="px-3 py-4 whitespace-nowrap text-sm text-gray-900">
+                              {formatCurrency(weeklyEMI)}
+                            </td>
+                            <td className="px-3 py-4 whitespace-nowrap">
+                              <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                                loan.status === 'active' ? 'bg-green-100 text-green-800' :
+                                loan.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
+                                'bg-gray-100 text-gray-800'
+                              }`}>
+                                {loan.status.charAt(0).toUpperCase() + loan.status.slice(1)}
+                              </span>
+                            </td>
+                            <td className="px-3 py-4 whitespace-nowrap text-sm font-medium">
+                              <button
+                                onClick={() => handleViewDetails(collections.find(c => c.loan_id === loan.id) || collections[0])}
+                                className="text-blue-600 hover:text-blue-900 flex items-center space-x-1"
+                              >
+                                <Eye className="w-4 h-4" />
+                                <span>View Details</span>
+                              </button>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-center py-8 text-gray-500">
+                  <Calendar className="w-12 h-12 mx-auto mb-4 text-gray-400" />
+                  <p className="text-lg font-medium">No loans in this batch yet</p>
+                  <p className="text-sm">Loans will appear here when assigned to this weekly batch.</p>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                onClick={() => setShowBatchModal(false)}
+                className="bg-gray-600 hover:bg-gray-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Worker Details Modal */}
+      {showWorkerModal && selectedWorker && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-2xl text-gray-900">{selectedWorker.name} - Customer Details</h2>
+              <button
+                onClick={() => setShowWorkerModal(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+              <div className="bg-blue-50 p-4 rounded-lg">
+                <h3 className="text-lg text-blue-900 mb-2">Total Customers</h3>
+                <p className="text-2xl text-blue-900">{getWorkerLoans(selectedWorker.id).length}</p>
+                <p className="text-sm text-blue-700">Under this worker</p>
+              </div>
+              <div className="bg-green-50 p-4 rounded-lg">
+                <h3 className="text-lg text-green-900 mb-2">Total Amount</h3>
+                <p className="text-2xl text-green-900">
+                  {formatCurrency(getWorkerLoans(selectedWorker.id).reduce((sum, loan) => sum + loan.amount, 0))}
+                </p>
+                <p className="text-sm text-green-700">Loan Amount</p>
+              </div>
+              <div className="bg-purple-50 p-4 rounded-lg">
+                <h3 className="text-lg text-purple-900 mb-2">Designation</h3>
+                <p className="text-2xl text-purple-900">{selectedWorker.designation}</p>
+                <p className="text-sm text-purple-700">Role</p>
+              </div>
+            </div>
+
+            <div className="mb-6">
+              <h3 className="text-lg text-gray-900 mb-4">Customer Details</h3>
+              
+              {getWorkerLoans(selectedWorker.id).length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Customer ID</th>
+                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Phone</th>
+                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Loan Amount</th>
+                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Weekly Batch</th>
+                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {getWorkerLoans(selectedWorker.id).map((loan) => (
+                        <tr key={loan.id} className="hover:bg-gray-50">
+                          <td className="px-3 py-4 whitespace-nowrap text-sm text-gray-900">
+                            {loan.customer_id}
+                          </td>
+                          <td className="px-3 py-4 whitespace-nowrap text-sm text-gray-900">
+                            {loan.customer?.name}
+                          </td>
+                          <td className="px-3 py-4 whitespace-nowrap text-sm text-gray-900">
+                            {loan.customer?.phone}
+                          </td>
+                          <td className="px-3 py-4 whitespace-nowrap text-sm text-gray-900">
+                            {formatCurrency(loan.amount)}
+                          </td>
+                          <td className="px-3 py-4 whitespace-nowrap text-sm text-gray-900">
+                            {loan.weekly_batch ? loan.weekly_batch.charAt(0).toUpperCase() + loan.weekly_batch.slice(1) : 'N/A'}
+                          </td>
+                          <td className="px-3 py-4 whitespace-nowrap">
+                            <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                              loan.status === 'active' ? 'bg-green-100 text-green-800' :
+                              loan.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
+                              'bg-gray-100 text-gray-800'
+                            }`}>
+                              {loan.status.charAt(0).toUpperCase() + loan.status.slice(1)}
+                            </span>
+                          </td>
+                          <td className="px-3 py-4 whitespace-nowrap text-sm font-medium">
+                            <button
+                              onClick={() => handleViewDetails(collections.find(c => c.loan_id === loan.id) || collections[0])}
+                              className="text-blue-600 hover:text-blue-900 flex items-center space-x-1"
+                            >
+                              <Eye className="w-4 h-4" />
+                              <span>View Details</span>
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-center py-8 text-gray-500">
+                  <User className="w-12 h-12 mx-auto mb-4 text-gray-400" />
+                  <p className="text-lg font-medium">No customers assigned to this worker</p>
+                  <p className="text-sm">Customers will appear here when assigned to this worker.</p>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                onClick={() => setShowWorkerModal(false)}
+                className="bg-gray-600 hover:bg-gray-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Collection Modal */}
+      {showCollectionModal && collectionTarget && collectionType === 'batch' && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-md">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-semibold text-gray-900">
+                Collect Amount - {(collectionTarget as WeeklyBatch).name}
+              </h2>
+              <button
+                onClick={() => {
+                  handleBatchSessionEnd()
+                  setProcessedInSession(new Set()) // Clear processed session
+                  setShowCollectionModal(false)
+                }}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            {/* Weekly customers with Select All */}
+              <div className="mb-4">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-lg text-gray-900">This Week Customers</h3>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const base = getBatchLoans((collectionTarget as WeeklyBatch).day)
+                    if (Object.keys(batchSelectIds).length === base.length) {
+                      setBatchSelectIds(() => {
+                        const next: Record<string, boolean> = {}
+                        try {
+                          const bc = new BroadcastChannel('collections')
+                          const pending = base.map(l => ({ loanId: l.id, customerId: l.customer_id, weeklyEmi: Math.round(computeWeeklyEmiForLoan(l)) }))
+                          bc.postMessage({ type: 'pending-selection-updated', at: Date.now(), batch: (collectionTarget as WeeklyBatch), pending })
+                          bc.close()
+                        } catch {}
+                        return next
+                      })
+                    } else {
+                      const map: Record<string, boolean> = {}
+                      base.forEach(l => { map[l.id] = true })
+                      setBatchSelectIds(() => {
+                        try {
+                          const bc = new BroadcastChannel('collections')
+                          const pending: any[] = [] // none pending when all selected
+                          bc.postMessage({ type: 'pending-selection-updated', at: Date.now(), batch: (collectionTarget as WeeklyBatch), pending })
+                          bc.close()
+                        } catch {}
+                        return map
+                      })
+                    }
+                  }}
+                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm hover:bg-gray-50"
+                >
+                  Select All
+                </button>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-64 overflow-auto">
+                {getBatchLoans((collectionTarget as WeeklyBatch).day).map(loan => (
+                  <label key={loan.id} className="bg-white p-3 rounded-lg border flex items-center justify-between">
+                    <div>
+                      <p className="text-sm text-gray-900">{loan.customer?.name}</p>
+                      <p className="text-xs text-gray-600">EMI: {formatCurrency(computeWeeklyEmiForLoan(loan))}</p>
+                    </div>
+                <input
+                      type="checkbox"
+                      className="w-4 h-4"
+                      checked={!!batchSelectIds[loan.id]}
+                      onChange={() => {
+                        setBatchSelectIds(prev => {
+                          const next = { ...prev, [loan.id]: !prev[loan.id] }
+                          
+                          // Note: COUNT increment will happen when exiting the batch page, not in real-time
+                          
+                          try {
+                            const bc = new BroadcastChannel('collections')
+                            const base = getBatchLoans((collectionTarget as WeeklyBatch).day)
+                            const pending = base
+                              .filter(l => !next[l.id])
+                              .map(l => ({ loanId: l.id, customerId: l.customer_id, weeklyEmi: Math.round(computeWeeklyEmiForLoan(l)) }))
+                            bc.postMessage({ type: 'pending-selection-updated', at: Date.now(), batch: (collectionTarget as WeeklyBatch), pending })
+                            bc.close()
+                          } catch {}
+                          return next
+                        })
+                      }}
+                    />
+                  </label>
+                ))}
+              </div>
+              </div>
+
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              // Collect for selected loans only; unselected remain pending for dashboard
+              const batch = collectionTarget as WeeklyBatch
+              const selected = getBatchLoans(batch.day).filter(l => batchSelectIds[l.id])
+              if (selected.length === 0) {
+                alert('Please select at least one customer to collect amount.')
+                return
+              }
+              const today = new Date().toISOString().split('T')[0]
+              const rows = selected.map(l => {
+                const weeklyEmi = Math.round(computeWeeklyEmiForLoan(l))
+                // compute remaining balance using local state collections
+                const interestRateMapping: { [key: string]: number } = {
+                  '8.33': 833, '6.33': 633, '12': 1200, '110': 11000, '115': 11500,
+                  '10': 1000, '25': 2500, '30': 3000, '111.11': 11111, '20': 2000
+                }
+                const rate = l.interest_rate || '8.33'
+                const emiAmount = interestRateMapping[rate] || 833
+                const totalInterest = emiAmount * (l.number_of_weeks || 15)
+                const totalAmount = totalInterest
+                const collectedSoFar = collections
+                  .filter(c => c.loan_id === l.id)
+                  .reduce((s, c) => s + c.amount_collected, 0)
+                const remainingBalance = Math.max(0, totalAmount - (collectedSoFar + weeklyEmi))
+                return {
+                  loan_id: l.id,
+                  customer_id: l.customer_id,
+                  worker_id: l.team_leader_id || null,
+                  amount_collected: weeklyEmi,
+                  remaining_balance: remainingBalance,
+                  status: 'completed',
+                  collection_date: today
+                }
+              })
+              const { data, error } = await supabase.from('collections').insert(rows).select(`*, customer:customers(*), loan:loans(*), worker:employees(*)`)
+              if (!error) {
+                setCollections(prev => [...prev, ...(data || [])])
+                try {
+                  const bc = new BroadcastChannel('collections')
+                  // Build payload for dashboard sync
+                  const base = getBatchLoans((collectionTarget as WeeklyBatch).day)
+                  const pending = base
+                    .filter(l => !batchSelectIds[l.id])
+                    .map(l => ({ loanId: l.id, customerId: l.customer_id, weeklyEmi: Math.round(computeWeeklyEmiForLoan(l)) }))
+                  bc.postMessage({
+                    type: 'collections-updated',
+                    at: Date.now(),
+                    batch: {
+                      id: (collectionTarget as WeeklyBatch).id,
+                      day: (collectionTarget as WeeklyBatch).day,
+                      name: (collectionTarget as WeeklyBatch).name,
+                      collectedCount: rows.length,
+                    },
+                    pending
+                  })
+                  bc.close()
+                } catch {}
+                try { alert('Collections updated successfully!') } catch {}
+              }
+              handleBatchSessionEnd()
+              setProcessedInSession(new Set()) // Clear processed session
+              setShowCollectionModal(false)
+              setCollectionType(null)
+              setCollectionTarget(null)
+              setBatchSelectIds({})
+            }}>
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Note (Optional)
+                </label>
+                <input type="text" name="notes" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Add any notes (optional)" />
+              </div>
+
+              <div className="flex justify-end space-x-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleBatchSessionEnd()
+                    setProcessedInSession(new Set()) // Clear processed session
+                    setShowCollectionModal(false)
+                  }}
+                  className="bg-gray-600 hover:bg-gray-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+                >
+                  Collect Amount
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Pending Customer Details Modal */}
+      {showPendingDetailsModal && selectedPending && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-md">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-semibold text-gray-900">Pending Customer</h2>
+              <button onClick={() => setShowPendingDetailsModal(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            {(() => {
+              const loan = selectedPending.loan
+              const weeklyEmi = selectedPending.weeklyEmi // Use exact weekly EMI amount
+              
+              // Check if this customer has uncheck count (from previous sessions)
+              const hasStoredPending = !!(pendingCounts[loan.id] && pendingCounts[loan.id].count > 0)
+              
+              // Use stored count if available, otherwise compute missed weeks
+              const count = hasStoredPending ? computePendingCount(loan) : computePendingWeeks(loan)
+              const pendingAmount = weeklyEmi * count
+              
+              return (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <div className="text-xs text-gray-600">Customer Name</div>
+                      <div className="text-sm text-gray-900">{loan.customer?.name || loan.customer_id}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-600">Loan Amount</div>
+                      <div className="text-sm text-gray-900">{formatCurrency(loan.amount)}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-600">Weekly EMI</div>
+                      <div className="text-sm text-gray-900">{formatCurrency(weeklyEmi)}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-600">COUNT (weeks pending)</div>
+                      <div className="text-sm text-gray-900">= {count}</div>
+                    </div>
+                    <div className="col-span-2">
+                      <div className="text-xs text-gray-600">Pending Amount (COUNT × EMI)</div>
+                      <div className="text-lg font-semibold text-red-600">{formatCurrency(pendingAmount)}</div>
+                    </div>
+                  </div>
+                  <div className="flex justify-end space-x-2 pt-2">
+                    <button onClick={() => setShowPendingDetailsModal(false)} className="px-3 py-2 border border-gray-300 rounded-lg text-sm hover:bg-gray-50">Cancel</button>
+                    <button
+                      onClick={async () => {
+                        try {
+                          const loan = selectedPending.loan
+                          const weeklyEmi = selectedPending.weeklyEmi // Use exact weekly EMI amount
+                          
+                          // Check if this customer has uncheck count (from previous sessions)
+                          const hasStoredPending = !!(pendingCounts[loan.id] && pendingCounts[loan.id].count > 0)
+                          
+                          // Use stored count if available, otherwise compute missed weeks
+                          const count = hasStoredPending ? computePendingCount(loan) : computePendingWeeks(loan)
+                          const amount = weeklyEmi * count
+                          
+                          // Confirm collection
+                          const confirmMessage = `Confirm Collection:\n\nCustomer: ${loan.customer?.name || loan.customer_id}\nAmount: ${formatCurrency(amount)}\nCOUNT = ${count} × ${formatCurrency(weeklyEmi)}\n\nThis will remove the customer from pending list.`
+                          if (!confirm(confirmMessage)) {
+                            return
+                          }
+                          
+                          console.log('Collection Details:', {
+                            customer: loan.customer?.name,
+                            loanId: loan.id,
+                            weeklyEmi,
+                            count,
+                            amount,
+                            loanAmount: loan.amount
+                          })
+
+                          // Validate required fields
+                          if (!loan.id || !loan.customer_id) {
+                            alert('Error: Missing loan or customer information')
+                            return
+                          }
+
+                          // Calculate remaining balance correctly
+                          const interestRateMapping: { [key: string]: number } = {
+                            '8.33': 833, '6.33': 633, '12': 1200, '110': 11000, '115': 11500,
+                            '10': 1000, '25': 2500, '30': 3000, '111.11': 11111, '20': 2000
+                          }
+                          const rate = loan.interest_rate || '8.33'
+                          const emiAmount = interestRateMapping[rate] || 833
+                          const totalInterest = emiAmount * (loan.number_of_weeks || 15)
+                          const totalAmount = totalInterest
+                          const collectedSoFar = collections
+                            .filter(c => c.loan_id === loan.id)
+                            .reduce((s, c) => s + (Number(c.amount_collected) || 0), 0)
+                          const remainingBalance = Math.max(0, totalAmount - (collectedSoFar + amount))
+                          
+                          const row = {
+                            loan_id: loan.id,
+                            customer_id: loan.customer_id,
+                            worker_id: loan.team_leader_id || null,
+                            amount_collected: amount,
+                            remaining_balance: remainingBalance,
+                            status: 'completed',
+                            collection_date: new Date().toISOString().split('T')[0],
+                            notes: `Pending collection settled - COUNT = ${count} × ${formatCurrency(weeklyEmi)}`
+                          }
+
+                          console.log('Inserting collection:', row)
+
+                          const { data, error } = await supabase
+                            .from('collections')
+                            .insert([row])
+                            .select(`*, customer:customers(*), loan:loans(*), worker:employees(*)`)
+
+                          if (error) {
+                            console.error('Supabase error:', error)
+                            alert(`Error collecting pending amount: ${error.message}`)
+                            return
+                          }
+
+                          // Update local state
+                          setCollections(prev => [...prev, ...(data || [])])
+                          
+                          // Check if loan should be closed (remaining balance = 0)
+                          if (remainingBalance <= 0) {
+                            try {
+                              const { error: closeError } = await supabase
+                                .from('loans')
+                                .update({ status: 'closed' })
+                                .eq('id', loan.id)
+                              
+                              if (closeError) {
+                                console.error('Error closing loan:', closeError)
+                              } else {
+                                console.log(`Loan ${loan.id} closed - customer has paid full amount`)
+                                
+                                // Delete the customer since loan is fully paid
+                                try {
+                                  const { error: deleteCustomerError } = await supabase
+                                    .from('customers')
+                                    .delete()
+                                    .eq('id', loan.customer_id)
+                                  
+                                  if (deleteCustomerError) {
+                                    console.error('Error deleting customer:', deleteCustomerError)
+                                    alert('Error deleting customer. Please try again.')
+                                  } else {
+                                    console.log(`Customer ${loan.customer_id} deleted - loan fully paid`)
+                                    alert('Customer has been automatically deleted as the loan is fully paid!')
+                                  }
+                                } catch (deleteErr) {
+                                  console.error('Unexpected error deleting customer:', deleteErr)
+                                  alert('Error deleting customer. Please try again.')
+                                }
+                              }
+                            } catch (closeErr) {
+                              console.error('Unexpected error closing loan:', closeErr)
+                            }
+                          }
+                          
+                          // Insert into collected_customers table
+                          try {
+                            const collectedCustomerData = {
+                              loan_id: loan.id,
+                              customer_id: loan.customer_id,
+                              collection_id: data?.[0]?.id || null,
+                              collected_amount: amount,
+                              collection_date: new Date().toISOString().split('T')[0],
+                              collection_type: 'pending',
+                              status: 'collected',
+                              notes: `Pending collection settled - COUNT = ${count} × ${formatCurrency(weeklyEmi)}`
+                            }
+                            
+                            const { error: collectedError } = await supabase
+                              .from('collected_customers')
+                              .insert([collectedCustomerData])
+                            
+                            if (collectedError) {
+                              console.error('Error inserting collected customer:', collectedError)
+                            } else {
+                              console.log('Successfully inserted collected customer:', collectedCustomerData)
+                            }
+                          } catch (collectedErr) {
+                            console.error('Unexpected error inserting collected customer:', collectedErr)
+                          }
+                          
+                          // Delete customer from pending_customers table since they've been collected
+                          try {
+                            console.log(`Deleting pending customer for loan ${loan.id}`)
+                            const { error: deleteError } = await supabase
+                              .from('pending_customers')
+                              .delete()
+                              .eq('loan_id', loan.id)
+                            
+                            if (deleteError) {
+                              console.error('Error deleting pending customer:', deleteError)
+                              alert(`Warning: Collection successful but failed to remove from pending list: ${deleteError.message}`)
+                            } else {
+                              console.log(`Successfully deleted pending customer for loan ${loan.id}`)
+                            }
+                          } catch (deleteErr) {
+                            console.error('Unexpected error deleting pending customer:', deleteErr)
+                            alert('Warning: Collection successful but failed to remove from pending list')
+                          }
+                          
+                          // Update local state immediately to remove from UI
+                          setPendingCounts(prev => {
+                            const next = { ...prev }
+                            delete next[loan.id]
+                            console.log(`Updated pendingCounts, removed loan ${loan.id}:`, next)
+                            return next
+                          })
+                          
+                          // Refresh pending customers to remove collected customer from list
+                          setTimeout(() => {
+                            refreshPendingCustomers()
+                          }, 1000)
+                          
+                          // Force refresh of all data to ensure consistency
+                          try {
+                            // Reload all data to ensure UI is completely in sync
+                            const [collectionsResult, loansResult, pendingResult] = await Promise.all([
+                              supabase.from('collections').select(`*, customer:customers(*), loan:loans(*), worker:employees(*)`).order('collection_date', { ascending: true }),
+                              supabase.from('loans').select(`*, customer:customers(*), team_leader:employees(*)`),
+                              supabase.from('pending_customers').select('loan_id, pending_count, emi_amount')
+                            ])
+                            
+                            if (!collectionsResult.error) {
+                              setCollections(collectionsResult.data || [])
+                            }
+                            if (!loansResult.error) {
+                              setLoans(loansResult.data || [])
+                            }
+                            if (!pendingResult.error) {
+                              const map: Record<string, { count: number, emi: number }> = {}
+                              ;(pendingResult.data || []).forEach(r => { 
+                                map[r.loan_id] = { count: Number(r.pending_count || 0), emi: Number(r.emi_amount || 0) } 
+                              })
+                              setPendingCounts(map)
+                              console.log('Refreshed pending customers from database:', map)
+                            }
+                          } catch (refreshErr) {
+                            console.warn('Failed to refresh data:', refreshErr)
+                          }
+                          
+                          // Broadcast update with current pending counts
+                          setIsSyncingWithDashboard(true)
+                          try {
+                            const bc = new BroadcastChannel('collections')
+                            bc.postMessage({ 
+                              type: 'pending-customer-collected', 
+                              at: Date.now(), 
+                              loanId: loan.id,
+                              customerName: loan.customer?.name || loan.customer_id,
+                              collectedAmount: amount,
+                              remainingPendingCounts: pendingCounts
+                            })
+                            bc.close()
+                            setTimeout(() => setIsSyncingWithDashboard(false), 1000)
+                          } catch (bcError) {
+                            console.warn('BroadcastChannel error:', bcError)
+                            setIsSyncingWithDashboard(false)
+                          }
+                          
+                          // Close modal and show success
+                          setShowPendingDetailsModal(false)
+                          setSelectedPending(null)
+                          alert(`Pending amount collected successfully!\nCOUNT = ${count} × ${formatCurrency(weeklyEmi)} = ${formatCurrency(amount)}\n\nCustomer removed from pending list.`)
+                          
+                        } catch (error) {
+                          console.error('Collection error:', error)
+                          alert(`Error collecting pending amount: ${error instanceof Error ? error.message : 'Unknown error'}`)
+                        }
+                      }}
+                      className="px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm"
+                    >
+                      Confirm & Collect
+                    </button>
+                  </div>
+                </div>
+              )
+            })()}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

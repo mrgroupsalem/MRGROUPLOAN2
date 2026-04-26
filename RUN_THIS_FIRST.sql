@@ -1,0 +1,46 @@
+-- ============================================
+-- MR GROUPS LOAN MANAGEMENT SYSTEM
+-- Database Setup Instructions
+-- ============================================
+-- 
+-- QUICK START:
+-- 1. Open Supabase Dashboard → SQL Editor
+-- 2. Copy entire content of: mr-groups-complete-schema.sql
+-- 3. Paste here and click "Run"
+-- 4. Your database is ready!
+--
+-- WHAT THIS CREATES:
+-- ✅ 13 Tables (users, customers, loans, collections, etc.)
+-- ✅ Photo upload support (photo_url column in customers)
+-- ✅ Employee/Team Leader tracking
+-- ✅ Regular & Emergency loan systems
+-- ✅ Collection workflow management
+-- ✅ Batch organization (Tue/Thu/Fri)
+-- ✅ Sample team leader data
+--
+-- IMPORTANT FIELDS:
+-- - customers.photo_url → Stores photo URLs from Supabase Storage
+-- - customers.created_by → Tracks which user created the customer
+-- - loans.team_leader_id → Links to employees table
+-- - All tables have proper indexes for performance
+--
+-- VERIFICATION (after running):
+-- Run these to verify setup:
+--   SELECT * FROM employees;
+--   SELECT column_name FROM information_schema.columns WHERE table_name = 'customers' AND column_name = 'photo_url';
+--
+-- RELATED FILES:
+-- - mr-groups-complete-schema.sql → Main schema file (USE THIS)
+-- - fix_photo_upload_complete.sql → Photo upload specific fixes
+-- - DATABASE_SCHEMA_GUIDE.md → Complete documentation
+--
+-- SUPPORT:
+-- If you get errors, check:
+-- 1. You're logged in as Supabase admin
+-- 2. No existing tables conflict (or use DROP TABLE IF EXISTS)
+-- 3. See DATABASE_SCHEMA_GUIDE.md for troubleshooting
+--
+-- ============================================
+-- PASTE THE CONTENTS OF mr-groups-complete-schema.sql BELOW THIS LINE
+-- ============================================
+

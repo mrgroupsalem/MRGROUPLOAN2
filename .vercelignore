@@ -1,0 +1,3 @@
+# Ignore Firebase functions
+functions/
+functions/**

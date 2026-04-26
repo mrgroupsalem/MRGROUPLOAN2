@@ -1,0 +1,29 @@
+mutation CreateNewUser($displayName: String!, $email: String!, $phoneNumber: String, $userType: String!) @auth(level: USER) {
+  user_insert(data: {displayName: $displayName, email: $email, phoneNumber: $phoneNumber, userType: $userType, createdAt_expr: "request.time"})
+}
+
+query GetUserById($id: UUID!) @auth(level: USER) {
+  user(id: $id) {
+    id
+    displayName
+    email
+    phoneNumber
+    userType
+    createdAt
+  }
+}
+
+query ListLoanApplicationsForUser @auth(level: USER) {
+  loanApplications(where: {applicantId_expr: "auth.uid"}) {
+    id
+    amountRequested
+    applicationDate
+    desiredRepaymentMonths
+    purpose
+    status
+  }
+}
+
+mutation UpdateLoanApplicationStatus($id: UUID!, $status: String!) @auth(level: USER) {
+  loanApplication_update(key: {id: $id}, data: {status: $status})
+}

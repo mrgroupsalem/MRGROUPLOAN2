@@ -1,0 +1,15 @@
+--- a/src/components/Dashboard.tsx
++++ b/src/components/Dashboard.tsx
+@@ -305,6 +305,12 @@
+           setIsSyncing(true)
+           // Refresh all data to update collections and stats
+           loadData().finally(() => setIsSyncing(false))
++        } else if (ev?.data?.type === 'loan-status-changed') {
++          // Handle loan status change from Collections page
++          console.log('Loan status changed in Collections:', ev.data.loanId, 'New status:', ev.data.newStatus)
++          setIsSyncing(true)
++          // Refresh all data to update weekly batches
++          loadData().finally(() => setIsSyncing(false))
+         }
+       }
+     } catch {}
