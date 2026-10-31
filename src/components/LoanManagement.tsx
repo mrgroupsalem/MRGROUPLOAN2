@@ -5,11 +5,13 @@ import { useRouter } from 'next/navigation'
 import { Plus, Search, Filter, MoreHorizontal, Edit, Trash2, Eye, X, AlertTriangle, CheckCircle, Download, Upload, Flame, CreditCard } from 'lucide-react'
 import { Loan, Customer, Employee } from '@/types'
 import { formatCurrency, formatDate } from '@/lib/utils'
+import { splitCustomerNames } from '@/lib/customerIdGenerator'
 import { exportLoans } from '@/lib/exportUtils'
 import { supabase } from '@/lib/supabase'
 import EmergencyLoanApplication from './EmergencyLoanApplication'
 import AddLoanModal from './AddLoanModal'
 import ImportLoansModal from './ImportLoansModal'
+import LocationPickerMap from './LocationPickerMap'
 
 interface LoanManagementProps {
   onBack: () => void
@@ -583,14 +585,24 @@ function LoanDetailsModal({
   loan: Loan
   onClose: () => void
 }) {
+  const customerLat = loan.customer?.latitude != null ? parseFloat(String(loan.customer.latitude)) : null
+  const customerLng = loan.customer?.longitude != null ? parseFloat(String(loan.customer.longitude)) : null
+
+  // Calculate repayment details
+  const rateNum = parseFloat(loan.interest_rate || '0')
+  const weeksNum = loan.number_of_weeks || 0
+  const emiVal = (loan.amount > 0 && rateNum > 0) ? Math.round(((loan.amount * rateNum) / 100) * 100) / 100 : 0
+  const totalCollVal = (emiVal > 0 && weeksNum > 0) ? Math.round(emiVal * weeksNum * 100) / 100 : 0
+  const totalIntVal = (totalCollVal > 0 && loan.amount > 0) ? Math.max(0, Math.round((totalCollVal - loan.amount) * 100) / 100) : 0
+
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-6 w-full max-w-md">
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-lg p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
         <h2 className="text-lg font-semibold mb-4">Loan Details</h2>
         <div className="space-y-3">
           <div>
             <label className="block text-sm font-medium text-gray-700">Customer</label>
-            <p className="text-sm text-gray-900">{loan.customer?.name}</p>
+            <p className="text-sm text-gray-900 font-medium">{loan.customer?.name} ({loan.customer?.phone})</p>
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700">Amount</label>
@@ -602,6 +614,36 @@ function LoanDetailsModal({
               {loan.status.charAt(0).toUpperCase() + loan.status.slice(1)}
             </span>
           </div>
+
+          {/* Repayment & EMI Calculations */}
+          <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-lg">
+            <h4 className="text-xs font-bold text-blue-900 mb-2 flex items-center gap-1">
+              <span>📊</span> Repayment & EMI Summary
+            </h4>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="bg-white p-2 rounded border border-blue-100">
+                <span className="text-gray-500 block">Interest Rate:</span>
+                <span className="font-semibold text-gray-900">{loan.interest_rate}%</span>
+              </div>
+              <div className="bg-white p-2 rounded border border-blue-100">
+                <span className="text-gray-500 block">Duration:</span>
+                <span className="font-semibold text-gray-900">{weeksNum} Weeks</span>
+              </div>
+              <div className="bg-green-50 p-2 rounded border border-green-200">
+                <span className="text-green-700 font-semibold block">Weekly EMI:</span>
+                <span className="font-bold text-green-800">{formatCurrency(emiVal)}</span>
+              </div>
+              <div className="bg-white p-2 rounded border border-blue-100">
+                <span className="text-gray-500 block">Total Collection:</span>
+                <span className="font-bold text-blue-700">{formatCurrency(totalCollVal)}</span>
+              </div>
+              <div className="bg-white p-2 rounded border border-blue-100 col-span-2">
+                <span className="text-gray-500 block">Total Interest:</span>
+                <span className="font-bold text-amber-700">{formatCurrency(totalIntVal)}</span>
+              </div>
+            </div>
+          </div>
+
           <div>
             <label className="block text-sm font-medium text-gray-700">Start Date</label>
             <p className="text-sm text-gray-900">{formatDate(loan.start_date)}</p>
@@ -614,6 +656,27 @@ function LoanDetailsModal({
             <div>
               <label className="block text-sm font-medium text-gray-700">Purpose</label>
               <p className="text-sm text-gray-900">{loan.loan_purpose}</p>
+            </div>
+          )}
+
+          {/* Customer Address & Location */}
+          <div className="pt-2 border-t border-gray-100">
+            <label className="block text-sm font-medium text-gray-700">Customer Address</label>
+            <p className="text-sm text-gray-900">{loan.customer?.address || 'Address not provided'}</p>
+          </div>
+
+          {customerLat != null && customerLng != null && !isNaN(customerLat) && !isNaN(customerLng) && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                📍 Live Location Coordinates
+              </label>
+              <LocationPickerMap
+                latitude={customerLat}
+                longitude={customerLng}
+                address={loan.customer?.address}
+                interactive={false}
+                height="190px"
+              />
             </div>
           )}
         </div>
@@ -658,11 +721,95 @@ function EditLoanModal({
     customer_bank_name: loan.customer_bank_name || '',
     account_number: loan.account_number || '',
     ifsc_code: loan.ifsc_code || '',
+    address: loan.customer?.address || '',
+    latitude: loan.customer?.latitude != null ? String(loan.customer?.latitude) : '',
+    longitude: loan.customer?.longitude != null ? String(loan.customer?.longitude) : '',
     additional_mobile_1: loan.customer?.additional_mobile_1 || '',
     additional_mobile_1_relationship: loan.customer?.additional_mobile_1_relationship || '',
     additional_mobile_2: loan.customer?.additional_mobile_2 || '',
     additional_mobile_2_relationship: loan.customer?.additional_mobile_2_relationship || ''
   })
+
+  const [locationLoading, setLocationLoading] = useState(false)
+  const [locationSuccess, setLocationSuccess] = useState<string | null>(null)
+  const [locationError, setLocationError] = useState<string | null>(null)
+  const [showMap, setShowMap] = useState(Boolean(loan.customer?.latitude && loan.customer?.longitude))
+
+  const handleChooseLiveLocation = () => {
+    if (typeof window === 'undefined' || !navigator.geolocation) {
+      setLocationError('Geolocation is not supported by your browser.')
+      return
+    }
+
+    setLocationLoading(true)
+    setLocationError(null)
+    setLocationSuccess(null)
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const lat = position.coords.latitude
+        const lng = position.coords.longitude
+
+        setFormData(prev => ({
+          ...prev,
+          latitude: lat.toFixed(8),
+          longitude: lng.toFixed(8)
+        }))
+        setShowMap(true)
+
+        try {
+          const res = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&addressdetails=1`,
+            { headers: { 'Accept-Language': 'en' } }
+          )
+          if (!res.ok) throw new Error('Geocoding service unavailable')
+          const data = await res.json()
+          if (data && data.display_name) {
+            setFormData(prev => ({
+              ...prev,
+              address: data.display_name,
+              latitude: lat.toFixed(8),
+              longitude: lng.toFixed(8)
+            }))
+            if (errors.address) {
+              setErrors(prev => ({ ...prev, address: '' }))
+            }
+          }
+          setLocationSuccess('Location and address detected successfully!')
+        } catch (err) {
+          console.warn('Reverse geocoding warning:', err)
+          setLocationSuccess('Coordinates captured! You can edit address manually.')
+        } finally {
+          setLocationLoading(false)
+        }
+      },
+      (error) => {
+        setLocationLoading(false)
+        let message = 'Unable to retrieve location.'
+        if (error.code === error.PERMISSION_DENIED) {
+          message = 'Location permission was denied. Please allow location access in your browser settings or enter address manually.'
+        } else if (error.code === error.POSITION_UNAVAILABLE) {
+          message = 'Location information is unavailable. Please check your GPS signal or enter address manually.'
+        } else if (error.code === error.TIMEOUT) {
+          message = 'Location request timed out. Please try again or enter address manually.'
+        }
+        setLocationError(message)
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    )
+  }
+
+  const handleMapLocationChange = (lat: number, lng: number, detectedAddress?: string) => {
+    setFormData(prev => ({
+      ...prev,
+      latitude: lat.toFixed(8),
+      longitude: lng.toFixed(8),
+      ...(detectedAddress ? { address: detectedAddress } : {})
+    }))
+    if (detectedAddress && errors.address) {
+      setErrors(prev => ({ ...prev, address: '' }))
+    }
+  }
 
   const [photoUpload, setPhotoUpload] = useState<{
     file: File | null
@@ -760,6 +907,9 @@ function EditLoanModal({
         account_number: formData.account_number || undefined,
         ifsc_code: formData.ifsc_code || undefined,
         customer_update: {
+          address: formData.address || null,
+          latitude: formData.latitude ? parseFloat(formData.latitude) : (loan.customer?.latitude ?? null),
+          longitude: formData.longitude ? parseFloat(formData.longitude) : (loan.customer?.longitude ?? null),
           additional_mobile_1: formData.additional_mobile_1 || null,
           additional_mobile_1_relationship: formData.additional_mobile_1_relationship || null,
           additional_mobile_2: formData.additional_mobile_2 || null,
@@ -772,6 +922,29 @@ function EditLoanModal({
   }
 
   const handleInputChange = (field: string, value: string) => {
+    if (field === 'number_of_weeks') {
+      const weeks = parseInt(value) || 0
+      let rate = formData.interest_rate
+      if (weeks === 15) rate = '8.33'
+      else if (weeks === 20) rate = '6.33'
+      else if (weeks === 25) rate = '5.25'
+
+      let newEndDate = formData.end_date
+      if (formData.start_date && weeks > 0) {
+        const start = new Date(formData.start_date)
+        start.setDate(start.getDate() + weeks * 7)
+        newEndDate = start.toISOString().split('T')[0]
+      }
+
+      setFormData(prev => ({
+        ...prev,
+        number_of_weeks: value,
+        interest_rate: rate,
+        end_date: newEndDate
+      }))
+      return
+    }
+
     setFormData(prev => ({ ...prev, [field]: value }))
     // Clear error when user starts typing
     if (errors[field]) {
@@ -779,9 +952,16 @@ function EditLoanModal({
     }
   }
 
+  const editLoanAmount = parseFloat(formData.amount) || 0
+  const editRate = parseFloat(formData.interest_rate) || 0
+  const editWeeks = parseInt(formData.number_of_weeks) || 0
+  const editWeeklyEMI = (editLoanAmount > 0 && editRate > 0) ? Math.round(((editLoanAmount * editRate) / 100) * 100) / 100 : 0
+  const editTotalCollection = (editWeeklyEMI > 0 && editWeeks > 0) ? Math.round(editWeeklyEMI * editWeeks * 100) / 100 : 0
+  const editTotalInterest = (editTotalCollection > 0 && editLoanAmount > 0) ? Math.max(0, Math.round((editTotalCollection - editLoanAmount) * 100) / 100) : 0
+
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-lg p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
         <h2 className="text-lg font-semibold mb-4">Edit Loan</h2>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
@@ -801,6 +981,97 @@ function EditLoanModal({
               ))}
             </select>
             {errors.customer_id && <p className="text-red-500 text-xs mt-1">{errors.customer_id}</p>}
+          </div>
+
+          {/* Customer Address & Live Location */}
+          <div className="pt-2 border-t border-gray-100">
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-sm font-medium text-gray-700">Customer Address</label>
+              <button
+                type="button"
+                onClick={handleChooseLiveLocation}
+                disabled={locationLoading}
+                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-md bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {locationLoading ? 'Detecting...' : '📍 Choose Live Location'}
+              </button>
+            </div>
+
+            {locationSuccess && (
+              <div className="mb-2 p-1.5 bg-green-50 border border-green-200 rounded text-xs text-green-800 flex items-center justify-between">
+                <span>✓ {locationSuccess}</span>
+                <button type="button" onClick={() => setLocationSuccess(null)} className="font-bold text-green-700 ml-1">×</button>
+              </div>
+            )}
+
+            {locationError && (
+              <div className="mb-2 p-1.5 bg-red-50 border border-red-200 rounded text-xs text-red-700 flex items-center justify-between">
+                <span>⚠️ {locationError}</span>
+                <button type="button" onClick={() => setLocationError(null)} className="font-bold text-red-700 ml-1">×</button>
+              </div>
+            )}
+
+            <textarea
+              value={formData.address}
+              onChange={(e) => handleInputChange('address', e.target.value)}
+              rows={2}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 text-sm"
+              placeholder="Enter customer address"
+            />
+
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-0.5">Latitude</label>
+                <input
+                  type="text"
+                  value={formData.latitude}
+                  onChange={(e) => {
+                    handleInputChange('latitude', e.target.value)
+                    setShowMap(true)
+                  }}
+                  placeholder="e.g. 13.0827"
+                  className="w-full px-2.5 py-1 text-xs bg-gray-50 border border-gray-300 rounded-md font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-0.5">Longitude</label>
+                <input
+                  type="text"
+                  value={formData.longitude}
+                  onChange={(e) => {
+                    handleInputChange('longitude', e.target.value)
+                    setShowMap(true)
+                  }}
+                  placeholder="e.g. 80.2707"
+                  className="w-full px-2.5 py-1 text-xs bg-gray-50 border border-gray-300 rounded-md font-mono"
+                />
+              </div>
+            </div>
+
+            {(formData.latitude || formData.longitude || showMap) && (
+              <div className="mt-2">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-medium text-gray-600">🗺️ Map Location</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowMap(!showMap)}
+                    className="text-xs text-blue-600 hover:underline"
+                  >
+                    {showMap ? 'Hide map' : 'Show map'}
+                  </button>
+                </div>
+                {showMap && (
+                  <LocationPickerMap
+                    latitude={formData.latitude ? parseFloat(formData.latitude) : null}
+                    longitude={formData.longitude ? parseFloat(formData.longitude) : null}
+                    address={formData.address}
+                    interactive={true}
+                    height="190px"
+                    onLocationChange={handleMapLocationChange}
+                  />
+                )}
+              </div>
+            )}
           </div>
 
           <div>
@@ -879,13 +1150,39 @@ function EditLoanModal({
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Number of Weeks
               </label>
-              <input
-                type="number"
+              <select
                 value={formData.number_of_weeks}
                 onChange={(e) => handleInputChange('number_of_weeks', e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
-                min="1"
-              />
+              >
+                <option value="15">15 Weeks (8.33%)</option>
+                <option value="20">20 Weeks (6.33%)</option>
+                <option value="25">25 Weeks (5.25%)</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Repayment Calculation Card */}
+          <div className="bg-blue-50/70 border border-blue-200 rounded-lg p-3">
+            <div className="text-xs font-bold text-blue-900 mb-2 flex items-center justify-between">
+              <span>📊 Repayment Calculation</span>
+              <span className="text-[11px] font-semibold text-blue-700 bg-blue-100 px-2 py-0.5 rounded">
+                {editWeeks} Weeks Plan
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              <div className="bg-green-50 p-2 rounded border border-green-200">
+                <span className="text-green-700 font-semibold block">Weekly EMI</span>
+                <span className="font-bold text-green-800 text-sm">₹{editWeeklyEMI.toLocaleString('en-IN')}</span>
+              </div>
+              <div className="bg-white p-2 rounded border border-blue-100">
+                <span className="text-gray-500 block">Total Collection</span>
+                <span className="font-bold text-blue-700 text-sm">₹{editTotalCollection.toLocaleString('en-IN')}</span>
+              </div>
+              <div className="bg-white p-2 rounded border border-blue-100">
+                <span className="text-gray-500 block">Total Interest</span>
+                <span className="font-bold text-amber-700 text-sm">₹{editTotalInterest.toLocaleString('en-IN')}</span>
+              </div>
             </div>
           </div>
 

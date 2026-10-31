@@ -33,6 +33,7 @@ import {
 } from 'lucide-react'
 import { DashboardStats, ChartData, WeeklyBatch, Loan, Employee, Collection } from '@/types'
 import { formatCurrency, formatNumber } from '@/lib/utils'
+import { splitCustomerNames } from '@/lib/customerIdGenerator'
 import { exportDashboardStats, exportWeeklyBatches, exportBatchDetails } from '@/lib/exportUtils'
 import { supabase } from '@/lib/supabase'
 
@@ -2554,10 +2555,22 @@ This will process collections for the selected customers.`
             </div>
 
             <div className="grid grid-cols-2 gap-4 mb-6">
+              {selectedCustomer.customer?.customer_id_display && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Customer ID</label>
+                  <p className="text-sm font-mono font-semibold text-primary-700">{selectedCustomer.customer.customer_id_display}</p>
+                </div>
+              )}
               <div>
                 <label className="block text-sm font-medium text-gray-700">Customer Name</label>
-                <p className="text-sm text-gray-900">{selectedCustomer.customer?.name}</p>
+                <p className="text-sm text-gray-900">{splitCustomerNames(selectedCustomer.customer?.name).customerName || selectedCustomer.customer?.name}</p>
               </div>
+              {splitCustomerNames(selectedCustomer.customer?.name).name ? (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Name</label>
+                  <p className="text-sm text-gray-900">{splitCustomerNames(selectedCustomer.customer?.name).name}</p>
+                </div>
+              ) : null}
               <div>
                 <label className="block text-sm font-medium text-gray-700">Phone</label>
                 <p className="text-sm text-gray-900">{selectedCustomer.customer?.phone}</p>
@@ -2646,11 +2659,22 @@ This will process collections for the selected customers.`
                   <label className="block text-sm font-medium text-gray-700 mb-1">Customer Name</label>
                   <input
                     type="text"
-                    value={customerToEdit.customer?.name || ''}
+                    value={splitCustomerNames(customerToEdit.customer?.name).customerName || customerToEdit.customer?.name || ''}
                     className="input-field bg-gray-100"
                     readOnly
                   />
                 </div>
+                {splitCustomerNames(customerToEdit.customer?.name).name ? (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
+                    <input
+                      type="text"
+                      value={splitCustomerNames(customerToEdit.customer?.name).name}
+                      className="input-field bg-gray-100"
+                      readOnly
+                    />
+                  </div>
+                ) : null}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Loan Amount</label>
                   <input

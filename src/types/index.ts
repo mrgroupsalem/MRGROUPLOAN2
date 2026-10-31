@@ -9,7 +9,8 @@ export interface User {
 export interface Employee {
   id: string
   name: string
-  email: string
+  email?: string
+  leader_id?: string
   phone: string
   designation: string
   department: string
@@ -29,10 +30,15 @@ export interface Customer {
   aadhaar_number?: string
   pan_number?: string
   additional_mobile_1?: string
+  additional_mobile_1_name?: string
   additional_mobile_1_relationship?: 'Husband' | 'Wife' | 'Mother' | 'Father' | 'Daughter' | 'Son' | 'Brother' | 'Sister' | 'Other'
   additional_mobile_2?: string
+  additional_mobile_2_name?: string
   additional_mobile_2_relationship?: 'Husband' | 'Wife' | 'Mother' | 'Father' | 'Daughter' | 'Son' | 'Brother' | 'Sister' | 'Other'
   is_verified?: boolean
+  is_mobile_verified?: boolean
+  latitude?: number
+  longitude?: number
   // Photo URL from Supabase Storage
   photo_url?: string
 }

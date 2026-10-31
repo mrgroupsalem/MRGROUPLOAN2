@@ -55,6 +55,11 @@ export interface Database {
           additional_mobile_2?: string
           additional_mobile_2_relationship?: string
           is_verified?: boolean
+          additional_mobile_1_name?: string
+          additional_mobile_2_name?: string
+          latitude?: number
+          longitude?: number
+          is_mobile_verified?: boolean
         }
         Insert: {
           id?: string
@@ -67,10 +72,15 @@ export interface Database {
           aadhaar_number?: string
           pan_number?: string
           additional_mobile_1?: string
+          additional_mobile_1_name?: string
           additional_mobile_1_relationship?: string
           additional_mobile_2?: string
+          additional_mobile_2_name?: string
           additional_mobile_2_relationship?: string
           is_verified?: boolean
+          latitude?: number
+          longitude?: number
+          is_mobile_verified?: boolean
         }
         Update: {
           id?: string
@@ -83,17 +93,23 @@ export interface Database {
           aadhaar_number?: string
           pan_number?: string
           additional_mobile_1?: string
+          additional_mobile_1_name?: string
           additional_mobile_1_relationship?: string
           additional_mobile_2?: string
+          additional_mobile_2_name?: string
           additional_mobile_2_relationship?: string
           is_verified?: boolean
+          latitude?: number
+          longitude?: number
+          is_mobile_verified?: boolean
         }
       }
       employees: {
         Row: {
           id: string
           name: string
-          email: string
+          email?: string | null
+          leader_id?: string | null
           phone: string
           designation: string
           department: string
@@ -102,7 +118,8 @@ export interface Database {
         Insert: {
           id?: string
           name: string
-          email: string
+          email?: string | null
+          leader_id?: string | null
           phone?: string
           designation?: string
           department?: string
@@ -111,7 +128,8 @@ export interface Database {
         Update: {
           id?: string
           name?: string
-          email?: string
+          email?: string | null
+          leader_id?: string | null
           phone?: string
           designation?: string
           department?: string

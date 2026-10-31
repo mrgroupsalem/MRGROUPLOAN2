@@ -53,7 +53,12 @@ export default function Workers({ onBack }: WorkersProps) {
         if (employeesError) {
           console.error('Error loading employees:', employeesError)
         } else {
-          setEmployees(employeesData || [])
+          // Normalize leader_id: use DB leader_id if present, otherwise extract from name
+          const normalized = (employeesData || []).map(emp => ({
+            ...emp,
+            leader_id: emp.leader_id || emp.name?.match(/\b(\d{3})\b/)?.[1] || undefined
+          }))
+          setEmployees(normalized)
         }
 
         // Load loans with related data
@@ -108,7 +113,8 @@ export default function Workers({ onBack }: WorkersProps) {
 
   const filteredEmployees = employees.filter(employee =>
     employee.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    employee.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (employee.leader_id && employee.leader_id.toLowerCase().includes(searchTerm.toLowerCase())) ||
+    (employee.email && employee.email.toLowerCase().includes(searchTerm.toLowerCase())) ||
     employee.designation.toLowerCase().includes(searchTerm.toLowerCase())
   )
 
@@ -166,31 +172,79 @@ export default function Workers({ onBack }: WorkersProps) {
 
   const handleAddWorker = async (newWorker: Employee) => {
     try {
-      // Generate an employee ID if your DB requires a non-null VARCHAR id (e.g., 'TLXXXX')
-      const generatedId = `TL${Date.now().toString(36).toUpperCase()}`
-      // Insert employee in Supabase
-      const { data, error } = await supabase
-        .from('employees')
-        .insert({
-          id: generatedId,
-          name: newWorker.name,
-          email: newWorker.email,
-          phone: newWorker.phone,
-          designation: newWorker.designation,
-          department: newWorker.department
-        })
-        .select()
-
-      if (error) {
-        console.error('Error adding worker:', error)
-        alert(`Error adding worker: ${'message' in error ? (error as any).message : 'Please try again.'}`)
+      // Validate Leader ID format (exactly 3 digits)
+      if (newWorker.leader_id && !/^\d{3}$/.test(newWorker.leader_id.trim())) {
+        alert('Leader ID must contain exactly 3 digits (e.g., 421, 473, 388, 222).')
         return
       }
 
+      // Check for duplicate Leader ID in database
+      if (newWorker.leader_id) {
+        const cleanLeaderId = newWorker.leader_id.trim()
+        const { data: existingEmployees } = await supabase
+          .from('employees')
+          .select('id, name, leader_id')
+
+        const duplicate = existingEmployees?.find(emp => 
+          (emp.leader_id && emp.leader_id === cleanLeaderId) ||
+          (emp.name && emp.name.match(/\b\d{3}\b/)?.[0] === cleanLeaderId)
+        )
+
+        if (duplicate) {
+          alert(`Leader ID "${cleanLeaderId}" already exists (assigned to ${duplicate.name}). Please use a unique Leader ID.`)
+          return
+        }
+      }
+
+      const generatedId = `TL${Date.now().toString(36).toUpperCase()}`
+
+      // Include leader_id in worker name if not already there so customerIdGenerator and TL dropdowns detect it
+      let finalName = newWorker.name.trim()
+      if (newWorker.leader_id && !finalName.includes(newWorker.leader_id)) {
+        finalName = `${finalName} ${newWorker.leader_id}`
+      }
+
+      const insertPayload: any = {
+        id: generatedId,
+        name: finalName,
+        phone: newWorker.phone,
+        designation: newWorker.designation,
+        department: newWorker.department,
+        ...(newWorker.email ? { email: newWorker.email } : {})
+      }
+
+      if (newWorker.leader_id) {
+        insertPayload.leader_id = newWorker.leader_id.trim()
+      }
+
+      // Attempt insert with leader_id
+      let { data, error } = await supabase
+        .from('employees')
+        .insert(insertPayload)
+        .select()
+
+      // If leader_id column is not yet migrated in Supabase, fallback without it
+      if (error && error.message?.includes('leader_id')) {
+        delete insertPayload.leader_id
+        const fallback = await supabase
+          .from('employees')
+          .insert(insertPayload)
+          .select()
+        data = fallback.data
+        error = fallback.error
+      }
+
+      if (error || !data || data.length === 0) {
+        console.error('Error adding worker:', error)
+        alert(`Error adding worker: ${error?.message || 'Please try again.'}`)
+        return
+      }
+
+      const savedWorker = { ...data[0], leader_id: newWorker.leader_id }
       // Update local state
-      setEmployees([...employees, data[0]])
+      setEmployees([...employees, savedWorker])
       setShowAddModal(false)
-      alert('Worker added successfully!')
+      alert(`Worker added successfully! Leader ID: ${newWorker.leader_id || 'N/A'}`)
     } catch (error) {
       console.error('Error adding worker:', error)
       alert(`Error adding worker: ${error instanceof Error ? error.message : 'Please try again.'}`)
@@ -199,28 +253,80 @@ export default function Workers({ onBack }: WorkersProps) {
 
   const handleUpdateWorker = async (updatedWorker: Employee) => {
     try {
-      // Update employee in Supabase
-      const { data, error } = await supabase
+      // Validate Leader ID format if provided
+      if (updatedWorker.leader_id && !/^\d{3}$/.test(updatedWorker.leader_id.trim())) {
+        alert('Leader ID must contain exactly 3 digits (e.g., 421, 473, 388, 222).')
+        return
+      }
+
+      // Check for duplicate Leader ID in database
+      if (updatedWorker.leader_id) {
+        const cleanLeaderId = updatedWorker.leader_id.trim()
+        const { data: existingEmployees } = await supabase
+          .from('employees')
+          .select('id, name, leader_id')
+
+        const duplicate = existingEmployees?.find(emp => 
+          emp.id !== updatedWorker.id && (
+            (emp.leader_id && emp.leader_id === cleanLeaderId) ||
+            (emp.name && emp.name.match(/\b\d{3}\b/)?.[0] === cleanLeaderId)
+          )
+        )
+
+        if (duplicate) {
+          alert(`Leader ID "${cleanLeaderId}" already exists (assigned to ${duplicate.name}). Please use a unique Leader ID.`)
+          return
+        }
+      }
+
+      let finalName = updatedWorker.name.trim()
+      if (updatedWorker.leader_id && !finalName.includes(updatedWorker.leader_id)) {
+        if (/\b\d{3}\b/.test(finalName)) {
+          finalName = finalName.replace(/\b\d{3}\b/, updatedWorker.leader_id)
+        } else {
+          finalName = `${finalName} ${updatedWorker.leader_id}`
+        }
+      }
+
+      const updatePayload: any = {
+        name: finalName,
+        phone: updatedWorker.phone,
+        designation: updatedWorker.designation,
+        department: updatedWorker.department,
+        ...(updatedWorker.email ? { email: updatedWorker.email } : {})
+      }
+
+      if (updatedWorker.leader_id) {
+        updatePayload.leader_id = updatedWorker.leader_id.trim()
+      }
+
+      let { data, error } = await supabase
         .from('employees')
-        .update({
-          name: updatedWorker.name,
-          email: updatedWorker.email,
-          phone: updatedWorker.phone,
-          designation: updatedWorker.designation,
-          department: updatedWorker.department
-        })
+        .update(updatePayload)
         .eq('id', updatedWorker.id)
         .select()
 
-      if (error) {
+      if (error && error.message?.includes('leader_id')) {
+        delete updatePayload.leader_id
+        const fallback = await supabase
+          .from('employees')
+          .update(updatePayload)
+          .eq('id', updatedWorker.id)
+          .select()
+        data = fallback.data
+        error = fallback.error
+      }
+
+      if (error || !data || data.length === 0) {
         console.error('Error updating worker:', error)
         alert('Error updating worker. Please try again.')
         return
       }
 
+      const savedWorker = { ...data[0], leader_id: updatedWorker.leader_id }
       // Update local state
       setEmployees(employees.map(emp => 
-        emp.id === updatedWorker.id ? data[0] : emp
+        emp.id === updatedWorker.id ? savedWorker : emp
       ))
       
       setShowEditModal(false)
@@ -404,7 +510,7 @@ export default function Workers({ onBack }: WorkersProps) {
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Search workers by name, email, or designation..."
+            placeholder="Search workers by name, leader ID, or designation..."
             className="pl-10 input-field"
           />
         </div>
@@ -414,6 +520,7 @@ export default function Workers({ onBack }: WorkersProps) {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
         {filteredEmployees.map((worker) => {
           const stats = getWorkerStats(worker.id)
+          const leaderCode = worker.leader_id || worker.name.match(/\b(\d{3})\b/)?.[1]
           return (
             <div key={worker.id} className="bg-white p-6 rounded-lg shadow-sm border hover:shadow-md transition-shadow">
               <div className="flex items-start justify-between mb-4">
@@ -423,7 +530,14 @@ export default function Workers({ onBack }: WorkersProps) {
                   </div>
                   <div>
                     <h3 className="text-lg font-semibold text-gray-900">{worker.name}</h3>
-                    <p className="text-sm text-gray-600">{worker.designation}</p>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      {leaderCode && (
+                        <span className="text-xs font-bold font-mono px-2 py-0.5 bg-blue-100 text-blue-800 rounded">
+                          ID: {leaderCode}
+                        </span>
+                      )}
+                      <p className="text-sm text-gray-600">{worker.designation}</p>
+                    </div>
                   </div>
                 </div>
                 <div className="flex items-center space-x-1">
@@ -445,10 +559,18 @@ export default function Workers({ onBack }: WorkersProps) {
               </div>
 
               <div className="space-y-2 mb-4">
-                <div className="flex items-center text-sm text-gray-600">
-                  <Mail className="w-4 h-4 mr-2" />
-                  <span>{worker.email}</span>
-                </div>
+                {leaderCode && (
+                  <div className="flex items-center text-sm text-blue-700 font-medium">
+                    <span className="w-4 h-4 mr-2 flex items-center justify-center font-bold text-xs bg-blue-100 text-blue-700 rounded font-mono">#</span>
+                    <span>Leader ID: <strong className="font-mono">{leaderCode}</strong></span>
+                  </div>
+                )}
+                {worker.email && (
+                  <div className="flex items-center text-sm text-gray-600">
+                    <Mail className="w-4 h-4 mr-2" />
+                    <span>{worker.email}</span>
+                  </div>
+                )}
                 <div className="flex items-center text-sm text-gray-600">
                   <Phone className="w-4 h-4 mr-2" />
                   <span>{worker.phone}</span>
@@ -492,7 +614,17 @@ export default function Workers({ onBack }: WorkersProps) {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-6">
-              <h2 className="text-2xl font-semibold text-gray-900">{selectedWorker.name} Details</h2>
+              <div>
+                <h2 className="text-2xl font-semibold text-gray-900">{selectedWorker.name}</h2>
+                <div className="flex items-center gap-2 mt-1">
+                  {(selectedWorker.leader_id || selectedWorker.name.match(/\b(\d{3})\b/)?.[1]) && (
+                    <span className="text-sm font-bold font-mono px-2.5 py-0.5 bg-blue-100 text-blue-800 rounded">
+                      Leader ID: {selectedWorker.leader_id || selectedWorker.name.match(/\b(\d{3})\b/)?.[1]}
+                    </span>
+                  )}
+                  <span className="text-sm text-gray-600">{selectedWorker.designation} • {selectedWorker.department}</span>
+                </div>
+              </div>
               <button
                 onClick={() => setShowWorkerDetails(false)}
                 className="text-gray-400 hover:text-gray-600"
@@ -599,6 +731,7 @@ export default function Workers({ onBack }: WorkersProps) {
       {/* Add Worker Modal */}
       {showAddModal && (
         <AddWorkerModal
+          existingEmployees={employees}
           onClose={() => setShowAddModal(false)}
           onSave={handleAddWorker}
         />
@@ -608,6 +741,7 @@ export default function Workers({ onBack }: WorkersProps) {
       {showEditModal && workerToEdit && (
         <EditWorkerModal
           worker={workerToEdit}
+          existingEmployees={employees}
           onClose={() => {
             setShowEditModal(false)
             setWorkerToEdit(null)
@@ -621,28 +755,53 @@ export default function Workers({ onBack }: WorkersProps) {
 
 // Add Worker Modal Component
 function AddWorkerModal({ 
+  existingEmployees,
   onClose, 
   onSave 
 }: { 
+  existingEmployees: Employee[]
   onClose: () => void
   onSave: (worker: Employee) => void
 }) {
   const [formData, setFormData] = useState({
     name: '',
-    email: '',
+    leader_id: '',
     phone: '',
     designation: '',
     department: ''
   })
+  const [leaderIdError, setLeaderIdError] = useState<string | null>(null)
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
+
+    const cleanId = formData.leader_id.trim()
+    if (!cleanId) {
+      setLeaderIdError('Leader ID is required.')
+      return
+    }
+
+    if (!/^\d{3}$/.test(cleanId)) {
+      setLeaderIdError('Leader ID must contain exactly 3 digits (e.g., 421, 473, 388, 222).')
+      return
+    }
+
+    // Check duplicate
+    const duplicate = existingEmployees.find(emp => 
+      (emp.leader_id && emp.leader_id.trim() === cleanId) ||
+      (emp.name && emp.name.match(/\b\d{3}\b/)?.[0] === cleanId)
+    )
+    if (duplicate) {
+      setLeaderIdError(`Leader ID "${cleanId}" already exists (assigned to ${duplicate.name}). Please enter a unique Leader ID.`)
+      return
+    }
+
     const newWorker: Employee = {
       id: Date.now().toString(),
-      name: formData.name,
-      email: formData.email,
-      phone: formData.phone,
-      designation: formData.designation,
+      name: formData.name.trim(),
+      leader_id: cleanId,
+      phone: formData.phone.trim(),
+      designation: formData.designation.trim(),
       department: formData.department,
       created_at: new Date().toISOString().split('T')[0]
     }
@@ -661,29 +820,45 @@ function AddWorkerModal({
               value={formData.name}
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
               className="input-field"
+              placeholder="Enter worker full name"
               required
             />
           </div>
+
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Leader ID</label>
             <input
-              type="email"
-              value={formData.email}
-              onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-              className="input-field"
+              type="text"
+              value={formData.leader_id}
+              onChange={(e) => {
+                const val = e.target.value.replace(/\D/g, '').slice(0, 3)
+                setFormData({ ...formData, leader_id: val })
+                if (leaderIdError) setLeaderIdError(null)
+              }}
+              placeholder="e.g. 421, 473, 388, 222"
+              className={`input-field font-mono ${leaderIdError ? 'border-red-500 ring-1 ring-red-500' : ''}`}
+              maxLength={3}
               required
             />
+            {leaderIdError && (
+              <p className="text-red-500 text-xs mt-1 font-medium">{leaderIdError}</p>
+            )}
+            <p className="text-xs text-gray-500 mt-1">Unique 3-digit Team Leader ID (numbers only)</p>
           </div>
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
             <input
               type="tel"
               value={formData.phone}
-              onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+              onChange={(e) => setFormData({ ...formData, phone: e.target.value.replace(/\D/g, '').slice(0, 10) })}
               className="input-field"
+              placeholder="10-digit mobile number"
+              maxLength={10}
               required
             />
           </div>
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Designation</label>
             <input
@@ -691,9 +866,11 @@ function AddWorkerModal({
               value={formData.designation}
               onChange={(e) => setFormData({ ...formData, designation: e.target.value })}
               className="input-field"
+              placeholder="e.g. Leader, Field Officer"
               required
             />
           </div>
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Department</label>
             <select
@@ -709,7 +886,8 @@ function AddWorkerModal({
               <option value="Finance">Finance</option>
             </select>
           </div>
-          <div className="flex justify-end space-x-2">
+
+          <div className="flex justify-end space-x-2 pt-2">
             <button
               type="button"
               onClick={onClose}
@@ -733,30 +911,60 @@ function AddWorkerModal({
 // Edit Worker Modal Component
 function EditWorkerModal({ 
   worker, 
+  existingEmployees,
   onClose, 
   onSave 
 }: { 
   worker: Employee
+  existingEmployees: Employee[]
   onClose: () => void
   onSave: (worker: Employee) => void
 }) {
+  const initialLeaderId = worker.leader_id || worker.name.match(/\b(\d{3})\b/)?.[1] || ''
   const [formData, setFormData] = useState({
     name: worker.name,
-    email: worker.email,
+    leader_id: initialLeaderId,
     phone: worker.phone,
     designation: worker.designation,
-    department: worker.department
+    department: worker.department,
+    email: worker.email || '' // preserve existing email
   })
+  const [leaderIdError, setLeaderIdError] = useState<string | null>(null)
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
+
+    const cleanId = formData.leader_id.trim()
+    if (!cleanId) {
+      setLeaderIdError('Leader ID is required.')
+      return
+    }
+
+    if (!/^\d{3}$/.test(cleanId)) {
+      setLeaderIdError('Leader ID must contain exactly 3 digits (e.g., 421, 473, 388, 222).')
+      return
+    }
+
+    // Check duplicate (exclude current worker)
+    const duplicate = existingEmployees.find(emp => 
+      emp.id !== worker.id && (
+        (emp.leader_id && emp.leader_id.trim() === cleanId) ||
+        (emp.name && emp.name.match(/\b\d{3}\b/)?.[0] === cleanId)
+      )
+    )
+    if (duplicate) {
+      setLeaderIdError(`Leader ID "${cleanId}" already exists (assigned to ${duplicate.name}). Please enter a unique Leader ID.`)
+      return
+    }
+
     const updatedWorker: Employee = {
       ...worker,
-      name: formData.name,
-      email: formData.email,
-      phone: formData.phone,
-      designation: formData.designation,
-      department: formData.department
+      name: formData.name.trim(),
+      leader_id: cleanId,
+      phone: formData.phone.trim(),
+      designation: formData.designation.trim(),
+      department: formData.department,
+      email: formData.email
     }
     onSave(updatedWorker)
   }
@@ -776,26 +984,40 @@ function EditWorkerModal({
               required
             />
           </div>
+
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Leader ID</label>
             <input
-              type="email"
-              value={formData.email}
-              onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-              className="input-field"
+              type="text"
+              value={formData.leader_id}
+              onChange={(e) => {
+                const val = e.target.value.replace(/\D/g, '').slice(0, 3)
+                setFormData({ ...formData, leader_id: val })
+                if (leaderIdError) setLeaderIdError(null)
+              }}
+              placeholder="e.g. 421, 473, 388, 222"
+              className={`input-field font-mono ${leaderIdError ? 'border-red-500 ring-1 ring-red-500' : ''}`}
+              maxLength={3}
               required
             />
+            {leaderIdError && (
+              <p className="text-red-500 text-xs mt-1 font-medium">{leaderIdError}</p>
+            )}
+            <p className="text-xs text-gray-500 mt-1">Unique 3-digit Team Leader ID (numbers only)</p>
           </div>
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
             <input
               type="tel"
               value={formData.phone}
-              onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+              onChange={(e) => setFormData({ ...formData, phone: e.target.value.replace(/\D/g, '').slice(0, 10) })}
               className="input-field"
+              maxLength={10}
               required
             />
           </div>
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Designation</label>
             <input
@@ -806,6 +1028,7 @@ function EditWorkerModal({
               required
             />
           </div>
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Department</label>
             <select
@@ -821,7 +1044,8 @@ function EditWorkerModal({
               <option value="Finance">Finance</option>
             </select>
           </div>
-          <div className="flex justify-end space-x-2">
+
+          <div className="flex justify-end space-x-2 pt-2">
             <button
               type="button"
               onClick={onClose}
