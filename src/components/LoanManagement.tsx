@@ -6,12 +6,15 @@ import { Plus, Search, Filter, MoreHorizontal, Edit, Trash2, Eye, X, AlertTriang
 import { Loan, Customer, Employee } from '@/types'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { splitCustomerNames } from '@/lib/customerIdGenerator'
+import { getLoanDisplayId } from '@/lib/loanIdGenerator'
 import { exportLoans } from '@/lib/exportUtils'
 import { supabase } from '@/lib/supabase'
 import EmergencyLoanApplication from './EmergencyLoanApplication'
 import AddLoanModal from './AddLoanModal'
 import ImportLoansModal from './ImportLoansModal'
 import LocationPickerMap from './LocationPickerMap'
+import DisbursementInfo from '@/components/ui/DisbursementInfo'
+import EditLoanForm from './EditLoanForm'
 
 interface LoanManagementProps {
   onBack: () => void
@@ -48,6 +51,7 @@ export default function LoanManagement({ onBack }: LoanManagementProps) {
           .from('loans')
           .select(`
             *,
+            customer:customers(*),
             team_leader:employees(*)
           `)
         
@@ -68,29 +72,21 @@ export default function LoanManagement({ onBack }: LoanManagementProps) {
         let allLoans: Loan[] = [];
         
         if (loansData) {
-          // Manually join customer data for regular loans
-          const loansWithCustomers = await Promise.all((loansData || []).map(async (loan) => {
-            // Find customer by matching loan.customer_id (UUID) with customer.id (UUID)
-            let { data: customerData } = await supabase
-              .from('customers')
-              .select('*')
-              .eq('id', loan.customer_id)
-              .single()
-            
-            // If still not found, create a placeholder customer object
-            if (!customerData) {
-              customerData = {
-                id: `placeholder-${loan.customer_id}`,
-                name: `Customer ${loan.customer_id}`,
-                phone: loan.customer_id,
-                address: 'Address not available',
-                customer_id_display: loan.customer_id
-              }
+          // If customer was joined directly, keep it; otherwise fallback to single query
+          const loansWithCustomers = await Promise.all((loansData || []).map(async (loan: any) => {
+            let customerData = loan.customer
+            if (!customerData && loan.customer_id) {
+              const { data } = await supabase
+                .from('customers')
+                .select('*')
+                .eq('id', loan.customer_id)
+                .maybeSingle()
+              customerData = data
             }
             
             return {
               ...loan,
-              customer: customerData
+              customer: customerData || null
             }
           }))
           
@@ -191,8 +187,12 @@ export default function LoanManagement({ onBack }: LoanManagementProps) {
   }, [])
 
   const filteredLoans = loans.filter(loan => {
-    const matchesSearch = loan.customer?.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         loan.customer?.phone.includes(searchTerm)
+    const term = searchTerm.toLowerCase()
+    const matchesSearch = 
+      (loan.customer?.name || '').toLowerCase().includes(term) ||
+      (loan.customer?.phone || '').includes(term) ||
+      (loan.customer?.customer_id_display || '').toLowerCase().includes(term) ||
+      getLoanDisplayId(loan).toLowerCase().includes(term)
     const matchesStatus = statusFilter === 'all' || loan.status === statusFilter
     return matchesSearch && matchesStatus
   })
@@ -260,6 +260,7 @@ export default function LoanManagement({ onBack }: LoanManagementProps) {
           status: updatedLoan.status,
           start_date: updatedLoan.start_date,
           end_date: updatedLoan.end_date,
+          disbursement_date: updatedLoan.disbursement_date || null,
           interest_rate: updatedLoan.interest_rate,
           number_of_weeks: updatedLoan.number_of_weeks,
           team_leader_id: updatedLoan.team_leader_id,
@@ -276,7 +277,20 @@ export default function LoanManagement({ onBack }: LoanManagementProps) {
         throw new Error(error.message)
       }
 
-      setLoans(loans.map(l => l.id === updatedLoan.id ? data[0] : l))
+      // Preserve existing customer and team_leader associations
+      const existingLoan = loans.find(l => l.id === updatedLoan.id)
+      const updatedCustomer = updatedLoan.customer_update
+        ? { ...existingLoan?.customer, ...updatedLoan.customer_update }
+        : (updatedLoan.customer || existingLoan?.customer)
+
+      const mergedLoan = {
+        ...existingLoan,
+        ...(data && data[0] ? data[0] : updatedLoan),
+        customer: updatedCustomer,
+        team_leader: updatedLoan.team_leader || existingLoan?.team_leader
+      }
+
+      setLoans(loans.map(l => l.id === updatedLoan.id ? mergedLoan : l))
       setShowEditModal(false)
       setLoanToEdit(null)
       alert('Loan updated successfully!')
@@ -307,24 +321,31 @@ export default function LoanManagement({ onBack }: LoanManagementProps) {
           </button>
           <h1 className="text-xl md:text-2xl font-bold text-gray-900">Loan Management</h1>
         </div>
-        <div className="flex flex-wrap items-center gap-2 md:gap-3">
-          <button
-            onClick={() => exportLoans(loans)}
-            className="flex items-center space-x-2 px-3 py-2 md:px-4 md:py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm md:text-base"
-          >
-            <Download className="w-4 h-4" />
-            <span className="hidden sm:inline">Export CSV</span>
-          </button>
+        <div className="flex flex-wrap items-center gap-2.5 sm:gap-3">
+          {/* 1. Import CSV */}
           <button
             onClick={() => setShowImportModal(true)}
-            className="flex items-center space-x-2 px-3 py-2 md:px-4 md:py-2 border-2 border-primary-100 text-primary-700 bg-primary-50 rounded-lg hover:bg-primary-100 hover:border-primary-200 transition-colors font-medium text-sm md:text-base"
+            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs sm:text-sm font-semibold shadow-sm transition-all hover:border-slate-400"
+            title="Import loans from CSV"
           >
-            <Upload className="w-4 h-4" />
-            <span className="hidden sm:inline">Import CSV</span>
+            <Upload className="w-4 h-4 text-slate-500" />
+            <span>Import CSV</span>
           </button>
+
+          {/* 2. Export CSV */}
+          <button
+            onClick={() => exportLoans(loans)}
+            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs sm:text-sm font-semibold shadow-sm transition-all hover:border-slate-400"
+            title="Export all loans to CSV"
+          >
+            <Download className="w-4 h-4 text-slate-500" />
+            <span>Export CSV</span>
+          </button>
+
+          {/* 3. New Loan (Primary Action) */}
           <button
             onClick={() => setShowLoanTypeModal(true)}
-            className="btn-primary flex items-center space-x-2 px-3 py-2 md:px-4 md:py-2 text-sm md:text-base"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-xs sm:text-sm font-bold shadow-md shadow-primary-500/25 transition-all hover:-translate-y-0.5"
           >
             <Plus className="w-4 h-4" />
             <span>New Loan</span>
@@ -341,7 +362,7 @@ export default function LoanManagement({ onBack }: LoanManagementProps) {
             placeholder="Search by customer name or phone..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="pl-10 pr-4 py-2 w-full border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+            className="pl-10 pr-4 py-2.5 w-full fintech-input"
           />
         </div>
         <div className="flex items-center gap-2">
@@ -349,7 +370,7 @@ export default function LoanManagement({ onBack }: LoanManagementProps) {
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as any)}
-            className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+            className="fintech-select py-2 text-sm"
           >
             <option value="all">All</option>
             <option value="active">Active</option>
@@ -360,15 +381,17 @@ export default function LoanManagement({ onBack }: LoanManagementProps) {
       </div>
 
       {/* Loans Table */}
-      <div className="bg-white rounded-lg shadow">
+      <div className="fintech-table-container shadow-xs">
         <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
+          <table className="fintech-table">
+            <thead className="bg-slate-50/80">
               <tr>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Loan ID</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Customer ID</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Customer</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Disbursed On</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Start Date</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">End Date</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
@@ -377,26 +400,54 @@ export default function LoanManagement({ onBack }: LoanManagementProps) {
             <tbody className="bg-white divide-y divide-gray-200">
               {filteredLoans.map((loan) => (
                 <tr key={loan.id} className={`${isEmergencyLoan(loan) ? 'bg-red-50 hover:bg-red-100' : 'hover:bg-gray-50'}`}>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-mono font-semibold text-blue-900">
+                    {getLoanDisplayId(loan)}
+                  </td>
                   <td className={`px-6 py-4 whitespace-nowrap text-sm font-medium ${isEmergencyLoan(loan) ? 'text-red-800' : 'text-gray-900'}`}>
-                    {loan.customer?.customer_id_display || loan.customer_id}
+                    {(() => {
+                      const displayId = loan.customer?.customer_id_display
+                      const isUuid = (val?: string | null) => Boolean(val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val))
+                      if (displayId && !isUuid(displayId)) {
+                        return <span className="font-mono font-semibold">{displayId}</span>
+                      }
+                      return (
+                        <span
+                          className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200"
+                          title="Customer record unlinked or display ID unavailable"
+                        >
+                          Customer not found
+                        </span>
+                      )
+                    })()}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <div>
-                      <div className={`text-sm font-medium ${isEmergencyLoan(loan) ? 'text-red-800' : 'text-gray-900'}`}>
-                        {loan.customer?.name}
+                    {loan.customer?.name ? (
+                      <div>
+                        <div className={`text-sm font-medium ${isEmergencyLoan(loan) ? 'text-red-800' : 'text-gray-900'}`}>
+                          {loan.customer.name}
+                        </div>
+                        <div className={`text-sm ${isEmergencyLoan(loan) ? 'text-red-600' : 'text-gray-500'}`}>
+                          {loan.customer.phone}
+                        </div>
                       </div>
-                      <div className={`text-sm ${isEmergencyLoan(loan) ? 'text-red-600' : 'text-gray-500'}`}>
-                        {loan.customer?.phone}
-                      </div>
-                    </div>
+                    ) : (
+                      <span className="text-xs text-slate-400 italic">No customer linked</span>
+                    )}
                   </td>
                   <td className={`px-6 py-4 whitespace-nowrap text-sm ${isEmergencyLoan(loan) ? 'text-red-800' : 'text-gray-900'}`}>
                     {formatCurrency(loan.amount)}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getStatusColor(loan.status)} ${isEmergencyLoan(loan) ? 'ring-1 ring-red-300' : ''}`}>
+                    <span className={
+                      loan.status === 'active' ? 'badge-active' :
+                      loan.status === 'closed' ? 'badge-closed' : 'badge-pending'
+                    }>
+                      <span className={`w-1.5 h-1.5 rounded-full ${loan.status === 'active' ? 'bg-emerald-500' : loan.status === 'closed' ? 'bg-slate-400' : 'bg-amber-500'}`}></span>
                       {loan.status.charAt(0).toUpperCase() + loan.status.slice(1)}
                     </span>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <DisbursementInfo loan={loan} variant="table-cell" />
                   </td>
                   <td className={`px-6 py-4 whitespace-nowrap text-sm ${isEmergencyLoan(loan) ? 'text-red-800' : 'text-gray-900'}`}>
                     {formatDate(loan.start_date)}
@@ -458,15 +509,19 @@ export default function LoanManagement({ onBack }: LoanManagementProps) {
 
       {/* Edit Loan Modal */}
       {showEditModal && loanToEdit && (
-        <EditLoanModal
+        <EditLoanForm
           loan={loanToEdit}
-          customers={customers}
           employees={employees}
+          isOpen={showEditModal}
           onClose={() => {
             setShowEditModal(false)
             setLoanToEdit(null)
           }}
-          onSave={handleUpdateLoan}
+          onSaveSuccess={() => {
+            setShowEditModal(false)
+            setLoanToEdit(null)
+            loadData()
+          }}
         />
       )}
 
@@ -474,7 +529,7 @@ export default function LoanManagement({ onBack }: LoanManagementProps) {
       {showDeleteModal && loanToDelete && (
         <DeleteConfirmationModal
           itemName="loan"
-          itemDetails={`Loan #${loanToDelete.id}`}
+          itemDetails={`Loan ${getLoanDisplayId(loanToDelete)}`}
           onClose={() => {
             setShowDeleteModal(false)
             setLoanToDelete(null)
@@ -601,6 +656,10 @@ function LoanDetailsModal({
         <h2 className="text-lg font-semibold mb-4">Loan Details</h2>
         <div className="space-y-3">
           <div>
+            <label className="block text-sm font-medium text-gray-700">Loan ID</label>
+            <p className="text-sm font-mono font-bold text-blue-900">{getLoanDisplayId(loan)}</p>
+          </div>
+          <div>
             <label className="block text-sm font-medium text-gray-700">Customer</label>
             <p className="text-sm text-gray-900 font-medium">{loan.customer?.name} ({loan.customer?.phone})</p>
           </div>
@@ -642,6 +701,11 @@ function LoanDetailsModal({
                 <span className="font-bold text-amber-700">{formatCurrency(totalIntVal)}</span>
               </div>
             </div>
+          </div>
+
+          {/* Disbursement & Due Schedule Card */}
+          <div className="pt-1">
+            <DisbursementInfo loan={loan} variant="full" />
           </div>
 
           <div>

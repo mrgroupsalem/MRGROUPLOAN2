@@ -139,6 +139,7 @@ export interface Database {
       loans: {
         Row: {
           id: string
+          loan_id_display?: string | null
           customer_id: string
           amount: number
           status: 'active' | 'closed' | 'pending'
@@ -153,9 +154,13 @@ export interface Database {
           account_number: string | null
           ifsc_code: string | null
           created_at: string
+          previous_loan_id?: string | null
+          renewed_at?: string | null
+          renewal_notes?: string | null
         }
         Insert: {
           id?: string
+          loan_id_display?: string | null
           customer_id: string
           amount: number
           status?: 'active' | 'closed' | 'pending'
@@ -170,9 +175,13 @@ export interface Database {
           account_number?: string | null
           ifsc_code?: string | null
           created_at?: string
+          previous_loan_id?: string | null
+          renewed_at?: string | null
+          renewal_notes?: string | null
         }
         Update: {
           id?: string
+          loan_id_display?: string | null
           customer_id?: string
           amount?: number
           status?: 'active' | 'closed' | 'pending'

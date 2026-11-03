@@ -23,7 +23,7 @@ export default function Home() {
   const renderCurrentView = () => {
     switch (currentView) {
       case 'dashboard':
-        return <Dashboard />
+        return <Dashboard onViewChange={setCurrentView} />
       case 'loans':
         return <LoanManagement onBack={() => setCurrentView('dashboard')} />
       case 'closed-loans':
@@ -68,9 +68,9 @@ export default function Home() {
   return (
     <RoleProvider>
       <AuthGateway>
-        <div className="min-h-screen bg-gray-50 flex flex-col lg:flex-row">
+        <div className="min-h-screen bg-slate-50 flex flex-col lg:flex-row">
           <Navigation currentView={currentView} onViewChange={setCurrentView} />
-          <main className="flex-1 pt-16 lg:pt-0 lg:ml-[240px] bg-gray-50 min-h-screen w-full">
+          <main className="flex-1 pt-16 lg:pt-0 lg:ml-[260px] bg-slate-50 min-h-screen w-full overflow-x-hidden">
             {renderCurrentView()}
           </main>
         </div>

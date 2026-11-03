@@ -15,7 +15,8 @@ import {
   Database,
   CheckCircle2,
   AlertTriangle,
-  Shield
+  Shield,
+  LogOut
 } from 'lucide-react'
 import { useRole } from './RoleProvider'
 
@@ -26,7 +27,7 @@ interface NavigationProps {
 
 export default function Navigation({ currentView, onViewChange }: NavigationProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const { hasPermission } = useRole()
+  const { hasPermission, user, logout } = useRole()
 
   const navigation = [
     { name: 'Dashboard', icon: LayoutDashboard, view: 'dashboard', permission: 'view_dashboard' },
@@ -109,16 +110,28 @@ export default function Navigation({ currentView, onViewChange }: NavigationProp
           </ul>
         </nav>
 
-        {/* User info at bottom */}
-        <div className="flex-none p-4 border-t border-gray-200 bg-gray-50/50">
-          <div className="flex items-center overflow-hidden">
-            <div className="w-8 h-8 bg-primary-600 rounded-full flex items-center justify-center flex-shrink-0">
-              <span className="text-white font-medium text-sm">MR</span>
+        {/* User info & Sign Out at bottom */}
+        <div className="flex-none p-3 border-t border-gray-200 bg-gray-50/80">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center overflow-hidden min-w-0 pr-2">
+              <div className="w-8 h-8 bg-primary-600 rounded-full flex items-center justify-center flex-shrink-0 text-white font-semibold text-xs shadow-sm">
+                {user?.name ? user.name.slice(0, 2).toUpperCase() : 'AD'}
+              </div>
+              <div className="ml-2.5 overflow-hidden">
+                <p className="text-xs font-semibold text-gray-900 truncate">{user?.name || 'Administrator'}</p>
+                <p className="text-[11px] text-gray-500 truncate" title={user?.email || 'admin@mrgroups.com'}>
+                  {user?.email || 'admin@mrgroups.com'}
+                </p>
+              </div>
             </div>
-            <div className="ml-3 overflow-hidden">
-              <p className="text-sm font-medium text-gray-900 truncate">Admin User</p>
-              <p className="text-xs text-gray-500 truncate" title="mrgroupsalem@gmail.com">mrgroupsalem@gmail.com</p>
-            </div>
+            <button
+              onClick={() => logout()}
+              type="button"
+              title="Secure Sign Out"
+              className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors flex-shrink-0"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
           </div>
         </div>
       </div>

@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { Loan, Customer, Employee, Collection, DashboardStats } from '@/types'
 import { formatCurrency, formatDate, formatNumber } from '@/lib/utils'
+import DisbursementInfo from '@/components/ui/DisbursementInfo'
 import { 
   Download, 
   FileText, 
@@ -526,6 +527,7 @@ export default function Reports({ onBack }: ReportsProps) {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Customer</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Amount</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Disbursed On</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Start Date</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">End Date</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Team Leader</th>
@@ -561,6 +563,9 @@ export default function Reports({ onBack }: ReportsProps) {
                         }`}>
                           {loan.status}
                         </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <DisbursementInfo loan={loan} variant="table-cell" />
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
                         {formatDate(loan.start_date)}

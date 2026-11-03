@@ -21,6 +21,8 @@ import {
   ShieldCheckIcon,
 } from '@heroicons/react/24/outline'
 import LocationPickerMap from '@/components/LocationPickerMap'
+import { getFirstDueDate, generateDueSchedule, formatDueDate } from '@/lib/dueSchedule'
+import { CheckCircle2 } from 'lucide-react'
 
 interface Employee {
   id: string
@@ -64,6 +66,7 @@ interface FormData {
   ifsc_code: string
 
   // Dates
+  disbursement_date: string
   start_date: string
   end_date: string
 }
@@ -119,6 +122,7 @@ function NewLoanPageContent() {
     customer_bank_name: '',
     account_number: '',
     ifsc_code: '',
+    disbursement_date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }),
     start_date: '',
     end_date: '',
   })
@@ -683,10 +687,20 @@ function NewLoanPageContent() {
         customerId = newCustomer.id
       }
 
-      // Create loan
+      // Create loan with Admin Loan ID
+      let tlCode = '100'
+      if (formData.customer_id_display && formData.customer_id_display.length >= 3) {
+        tlCode = formData.customer_id_display.slice(0, 3)
+      }
+      const { count } = await supabase.from('loans').select('id', { count: 'exact', head: true })
+      const nextSeq = String((count || 0) + 1).padStart(3, '0')
+      const adminLoanId = `LN-${tlCode}-${nextSeq}`
+
       const loanPayload: any = {
         customer_id: customerId,
+        loan_id_display: adminLoanId,
         amount: parseFloat(formData.loan_amount),
+        disbursement_date: formData.disbursement_date || null,
         start_date: formData.start_date,
         end_date: formData.end_date,
         interest_rate: formData.interest_rate,
@@ -700,14 +714,22 @@ function NewLoanPageContent() {
         status: 'active',
       }
 
-      const { error: loanError } = await supabase.from('loans').insert(loanPayload).select()
+      let { data: createdLoanData, error: loanError } = await supabase.from('loans').insert(loanPayload).select().single()
+
+      if (loanError && loanError.message?.includes('loan_id_display')) {
+        delete loanPayload.loan_id_display
+        const retry = await supabase.from('loans').insert(loanPayload).select().single()
+        createdLoanData = retry.data
+        loanError = retry.error
+      }
 
       if (loanError) {
         alert(`Error creating loan: ${loanError.message}`)
         return
       }
 
-      alert('✅ Loan created successfully!')
+      const displayId = (createdLoanData as any)?.loan_id_display || adminLoanId
+      alert(`✅ Loan created successfully! Loan ID: ${displayId}`)
       router.push('/')
     } catch (error: any) {
       alert(`An unexpected error occurred: ${error?.message || 'Unknown error'}`)
@@ -1394,12 +1416,23 @@ function NewLoanPageContent() {
           </div>
 
           {/* ── Important Dates ── */}
-          <div className="bg-white shadow rounded-lg p-6">
-            <h2 className="text-lg font-medium text-gray-900 mb-4 flex items-center">
-              <CalendarIcon className="h-5 w-5 mr-2" />
+          <div className="bg-white shadow rounded-lg p-6 space-y-4">
+            <h2 className="text-lg font-medium text-gray-900 mb-2 flex items-center">
+              <CalendarIcon className="h-5 w-5 mr-2 text-blue-600" />
               Important Dates
             </h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Loan Disbursement Date *</label>
+                <input
+                  type="date"
+                  value={formData.disbursement_date}
+                  max={new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })}
+                  onChange={(e) => handleInputChange('disbursement_date', e.target.value)}
+                  className="w-full px-3 py-2 border rounded-md border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <p className="mt-1 text-xs text-gray-500">Date loan amount handed to customer</p>
+              </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Start Date *</label>
                 <input
@@ -1422,6 +1455,42 @@ function NewLoanPageContent() {
                 {formData.number_of_weeks && <p className="mt-1 text-xs text-gray-500">Auto-calculated from start date + {formData.number_of_weeks} weeks</p>}
               </div>
             </div>
+
+            {/* Live Due Schedule Preview Card */}
+            {(() => {
+              if (!formData.disbursement_date || !formData.weekly_batch) return null
+              const firstDue = getFirstDueDate(formData.disbursement_date, formData.weekly_batch)
+              const weeks = parseInt(formData.number_of_weeks) || 15
+              const schedule = generateDueSchedule(formData.disbursement_date, formData.weekly_batch, weeks)
+              const lastDue = schedule.length > 0 ? schedule[schedule.length - 1] : null
+              return (
+                <div className="p-4 rounded-xl bg-blue-50/80 border border-blue-200">
+                  <div className="flex items-center justify-between text-xs font-bold text-blue-900 mb-2">
+                    <span className="flex items-center gap-1.5">
+                      <CheckCircle2 className="w-4 h-4 text-blue-600" />
+                      Live Due Schedule Preview (Monday–Sunday Rule)
+                    </span>
+                    <span className="capitalize font-black px-2 py-0.5 rounded bg-blue-100 text-blue-800">
+                      {formData.weekly_batch} Batch
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                    <div className="bg-white p-2.5 rounded-lg border border-blue-100">
+                      <span className="text-gray-500 block text-[11px] font-semibold">1st Due Date</span>
+                      <strong className="text-emerald-700 font-extrabold text-sm">{formatDueDate(firstDue)}</strong>
+                    </div>
+                    <div className="bg-white p-2.5 rounded-lg border border-blue-100">
+                      <span className="text-gray-500 block text-[11px] font-semibold">Total Weekly Dues</span>
+                      <strong className="text-gray-900 font-extrabold text-sm">{weeks} Weeks</strong>
+                    </div>
+                    <div className="bg-white p-2.5 rounded-lg border border-blue-100">
+                      <span className="text-gray-500 block text-[11px] font-semibold">Final Due Date</span>
+                      <strong className="text-gray-900 font-extrabold text-sm">{formatDueDate(lastDue)}</strong>
+                    </div>
+                  </div>
+                </div>
+              )
+            })()}
           </div>
 
           {/* ── Submit ── */}

@@ -6,6 +6,8 @@ import { Customer, Loan } from '@/types'
 import { formatDate } from '@/lib/utils'
 import { exportCustomers } from '@/lib/exportUtils'
 import { supabase } from '@/lib/supabase'
+import CustomerLoanHistory from './CustomerLoanHistory'
+import DisbursementInfo from '@/components/ui/DisbursementInfo'
 
 interface CustomerManagementProps {
   onBack: () => void
@@ -24,6 +26,7 @@ export default function CustomerManagement({ onBack }: CustomerManagementProps) 
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
   const [customerToEdit, setCustomerToEdit] = useState<Customer | null>(null)
   const [customerToDelete, setCustomerToDelete] = useState<Customer | null>(null)
+  const [historyTargetCustomer, setHistoryTargetCustomer] = useState<Customer | null>(null)
 
   // Load data from Supabase
   useEffect(() => {
@@ -215,26 +218,39 @@ export default function CustomerManagement({ onBack }: CustomerManagementProps) 
     <div className="p-4 md:p-6 lg:p-8 space-y-4 max-w-[100vw] overflow-x-hidden">
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div className="flex items-center space-x-4">
+        <div className="flex items-center space-x-3">
           <button
             onClick={onBack}
-            className="text-gray-500 hover:text-gray-700"
+            className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition-colors text-sm font-semibold"
+            title="Back to Dashboard"
           >
             ← Back
           </button>
-          <h1 className="text-xl md:text-2xl font-bold text-gray-900">Customer Management</h1>
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Customer Directory</h1>
+              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200/60">
+                {customers.length} Borrowers
+              </span>
+            </div>
+            <p className="text-xs text-slate-500 mt-0.5">Search, review and inspect borrower credit history and verified profiles</p>
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2 md:gap-3">
+        <div className="flex flex-wrap items-center gap-2.5 sm:gap-3">
+          {/* 1. Export CSV */}
           <button
             onClick={() => exportCustomers(customers)}
-            className="flex items-center space-x-2 px-3 py-2 md:px-4 md:py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm md:text-base"
+            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs sm:text-sm font-semibold shadow-sm transition-all hover:border-slate-400"
+            title="Export all customers to CSV"
           >
-            <Download className="w-4 h-4" />
-            <span className="hidden sm:inline">Export CSV</span>
+            <Download className="w-4 h-4 text-slate-500" />
+            <span>Export CSV</span>
           </button>
+
+          {/* 2. Add New Customer (Primary Action) */}
           <button
             onClick={() => setShowAddModal(true)}
-            className="btn-primary flex items-center space-x-2 px-3 py-2 md:px-4 md:py-2 text-sm md:text-base"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-xs sm:text-sm font-bold shadow-md shadow-primary-500/25 transition-all hover:-translate-y-0.5"
           >
             <Plus className="w-4 h-4" />
             <span>Add New Customer</span>
@@ -251,7 +267,7 @@ export default function CustomerManagement({ onBack }: CustomerManagementProps) 
             placeholder="Search customers..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="pl-10 pr-4 py-2 w-full border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+            className="pl-10 pr-4 py-2.5 w-full fintech-input"
           />
         </div>
         <div className="flex items-center gap-2">
@@ -282,10 +298,10 @@ export default function CustomerManagement({ onBack }: CustomerManagementProps) 
       </div>
 
       {/* Customers Table */}
-      <div className="card">
+      <div className="fintech-table-container">
         <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
+          <table className="fintech-table">
+            <thead className="bg-slate-50/80">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Customer ID</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -445,6 +461,10 @@ export default function CustomerManagement({ onBack }: CustomerManagementProps) 
           customer={selectedCustomer}
           loans={getCustomerLoans(selectedCustomer)}
           onClose={() => setSelectedCustomer(null)}
+          onOpenFullHistory={(c) => {
+            setSelectedCustomer(null)
+            setHistoryTargetCustomer(c)
+          }}
         />
       )}
 
@@ -458,6 +478,20 @@ export default function CustomerManagement({ onBack }: CustomerManagementProps) 
           }}
           onSave={handleUpdateCustomer}
         />
+      )}
+
+
+      {/* Full Customer Loan History Modal */}
+      {historyTargetCustomer && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-[80] p-4">
+          <div className="max-w-4xl w-full">
+            <CustomerLoanHistory
+              customerId={historyTargetCustomer.id}
+              customer={historyTargetCustomer}
+              onClose={() => setHistoryTargetCustomer(null)}
+            />
+          </div>
+        </div>
       )}
 
       {/* Delete Confirmation Modal */}
@@ -583,11 +617,13 @@ function AddCustomerModal({
 function CustomerDetailsModal({ 
   customer, 
   loans, 
-  onClose 
+  onClose,
+  onOpenFullHistory
 }: { 
   customer: Customer
   loans: Loan[]
   onClose: () => void
+  onOpenFullHistory?: (customer: Customer) => void
 }) {
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
@@ -646,7 +682,16 @@ function CustomerDetailsModal({
 
           {/* Loan History */}
           <div className="space-y-4">
-            <h3 className="text-lg font-medium text-gray-900">Loan History</h3>
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-medium text-gray-900">Loan History</h3>
+              <button
+                type="button"
+                onClick={() => onOpenFullHistory && onOpenFullHistory(customer)}
+                className="text-xs font-semibold text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-md border border-blue-200 transition-colors"
+              >
+                View Complete History & Repayments →
+              </button>
+            </div>
             {loans.length > 0 ? (
               <div className="space-y-3">
                 {loans.map((loan) => (
@@ -671,6 +716,9 @@ function CustomerDetailsModal({
                             Emergency Loan
                           </span>
                         )}
+                        <div className="mt-2">
+                          <DisbursementInfo loan={loan} variant="compact" />
+                        </div>
                       </div>
                       <span className={`px-2 py-1 text-xs font-semibold rounded-full ${
                         loan.status === 'active' ? 'bg-green-100 text-green-800' :

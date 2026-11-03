@@ -21,7 +21,9 @@ import {
 import { Employee, Loan, Customer, Collection } from '@/types'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { exportWorkers } from '@/lib/exportUtils'
+import { getLoanDisplayId } from '@/lib/loanIdGenerator'
 import { supabase } from '@/lib/supabase'
+import LeaderCommissionSection from './LeaderCommissionSection'
 
 interface WorkersProps {
   onBack: () => void
@@ -392,57 +394,61 @@ export default function Workers({ onBack }: WorkersProps) {
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-white p-6 rounded-lg shadow-sm border">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="fintech-card p-5">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600">Total Workers</p>
-              <p className="text-2xl font-bold text-gray-900">{employees.length}</p>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Leaders</p>
+              <p className="text-2xl font-extrabold text-slate-900 font-numeric mt-1">{employees.length}</p>
+              <span className="text-[11px] text-slate-500 font-medium">Registered workers</span>
             </div>
-            <div className="p-3 bg-blue-100 rounded-full">
-              <User className="w-6 h-6 text-blue-600" />
+            <div className="w-10 h-10 rounded-xl bg-indigo-50 border border-indigo-200/60 flex items-center justify-center text-indigo-600">
+              <User className="w-5 h-5" />
             </div>
           </div>
         </div>
 
-        <div className="bg-white p-6 rounded-lg shadow-sm border">
+        <div className="fintech-card p-5">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600">Active Workers</p>
-              <p className="text-2xl font-bold text-gray-900">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Active Leaders</p>
+              <p className="text-2xl font-extrabold text-slate-900 font-numeric mt-1">
                 {employees.filter(emp => getWorkerStats(emp.id).customerCount > 0).length}
               </p>
+              <span className="text-[11px] text-emerald-600 font-medium">With active loans</span>
             </div>
-            <div className="p-3 bg-green-100 rounded-full">
-              <Users className="w-6 h-6 text-green-600" />
+            <div className="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-200/60 flex items-center justify-center text-emerald-600">
+              <Users className="w-5 h-5" />
             </div>
           </div>
         </div>
 
-        <div className="bg-white p-6 rounded-lg shadow-sm border">
+        <div className="fintech-card p-5">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600">Total Customers</p>
-              <p className="text-2xl font-bold text-gray-900">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Assigned Borrowers</p>
+              <p className="text-2xl font-extrabold text-slate-900 font-numeric mt-1">
                 {employees.reduce((sum, emp) => sum + getWorkerStats(emp.id).customerCount, 0)}
               </p>
+              <span className="text-[11px] text-slate-500 font-medium">Across all leaders</span>
             </div>
-            <div className="p-3 bg-purple-100 rounded-full">
-              <CreditCard className="w-6 h-6 text-purple-600" />
+            <div className="w-10 h-10 rounded-xl bg-purple-50 border border-purple-200/60 flex items-center justify-center text-purple-600">
+              <CreditCard className="w-5 h-5" />
             </div>
           </div>
         </div>
 
-        <div className="bg-white p-6 rounded-lg shadow-sm border">
+        <div className="fintech-card p-5">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600">Total Collections</p>
-              <p className="text-2xl font-bold text-gray-900">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Leader Collections</p>
+              <p className="text-2xl font-extrabold text-slate-900 font-numeric mt-1">
                 {formatCurrency(employees.reduce((sum, emp) => sum + getWorkerStats(emp.id).totalCollected, 0))}
               </p>
+              <span className="text-[11px] text-amber-600 font-medium">Cumulative collected</span>
             </div>
-            <div className="p-3 bg-yellow-100 rounded-full">
-              <TrendingUp className="w-6 h-6 text-yellow-600" />
+            <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-200/60 flex items-center justify-center text-amber-600">
+              <TrendingUp className="w-5 h-5" />
             </div>
           </div>
         </div>
@@ -522,7 +528,7 @@ export default function Workers({ onBack }: WorkersProps) {
           const stats = getWorkerStats(worker.id)
           const leaderCode = worker.leader_id || worker.name.match(/\b(\d{3})\b/)?.[1]
           return (
-            <div key={worker.id} className="bg-white p-6 rounded-lg shadow-sm border hover:shadow-md transition-shadow">
+            <div key={worker.id} className="fintech-card p-5 hover:border-indigo-300 transition-all flex flex-col justify-between">
               <div className="flex items-start justify-between mb-4">
                 <div className="flex items-center space-x-3">
                   <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
@@ -651,6 +657,11 @@ export default function Workers({ onBack }: WorkersProps) {
               </div>
             </div>
 
+            {/* Loan Creation Commission & Admin Payment Tracking (Workers Page Exclusive) */}
+            <div className="mb-6">
+              <LeaderCommissionSection worker={selectedWorker} loans={loans} />
+            </div>
+
             <div className="mb-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-4">Assigned Customers</h3>
               {(() => {
@@ -685,8 +696,8 @@ export default function Workers({ onBack }: WorkersProps) {
                                   <div className="text-sm text-gray-500">{customer.phone}</div>
                                 </div>
                               </td>
-                              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                {customerLoan?.id || 'N/A'}
+                              <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-900">
+                                {customerLoan ? getLoanDisplayId(customerLoan) : 'N/A'}
                               </td>
                               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                                 {customerLoan ? formatCurrency(customerLoan.amount) : 'N/A'}

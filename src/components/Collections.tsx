@@ -19,6 +19,8 @@ import { supabase } from '@/lib/supabase'
 import { exportCollections } from '@/lib/exportUtils'
 import { formatCurrency, formatDate, formatNumber } from '@/lib/utils'
 import { Collection, Loan, Customer, Employee } from '@/types'
+import { getLoanDisplayId } from '@/lib/loanIdGenerator'
+import DisbursementInfo from '@/components/ui/DisbursementInfo'
 
 interface CollectionsProps {
   onBack: () => void
@@ -592,7 +594,9 @@ This will remove the customer from pending list.`
       list = list.filter(c =>
         c.id.toLowerCase().includes(q) ||
         (c.customer?.name || '').toLowerCase().includes(q) ||
-        (c.loan?.id || '').toLowerCase().includes(q)
+        (c.customer?.customer_id_display || '').toLowerCase().includes(q) ||
+        (c.loan?.loan_id_display || '').toLowerCase().includes(q) ||
+        getLoanDisplayId(c.loan).toLowerCase().includes(q)
       )
     }
     if (dateFilter) list = list.filter(c => String(c.collection_date).slice(0, 10) === dateFilter)
@@ -735,7 +739,7 @@ This will remove the customer from pending list.`
                   <tbody className="divide-y">
                     {displayPending.map(p => (
                       <tr key={p.loan.id}>
-                        <td className="py-2 pr-4">{p.loan.customer?.name || p.loan.customer_id}</td>
+                        <td className="py-2 pr-4">{p.loan.customer?.name || p.loan.customer?.customer_id_display || 'Customer'}</td>
                         <td className="py-2 pr-4 capitalize">{p.loan.weekly_batch || '-'}</td>
                         <td className="py-2 pr-4">{getWorkerName(p.loan.team_leader_id)}</td>
                         <td className="py-2 pr-4">{p.count}</td>
@@ -936,7 +940,7 @@ Completion Rate: ${completionRate}%`)
                 value={searchTerm} 
                 onChange={e => setSearchTerm(e.target.value)} 
                 placeholder="Search by customer or loan ID" 
-                className="w-full px-4 py-3 pl-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300"
+                className="w-full pl-10 pr-4 py-2.5 fintech-input"
               />
               <div className="absolute left-3 top-1/2 transform -translate-y-1/2">
                 <Search className="w-5 h-5 text-gray-400" />
@@ -985,7 +989,7 @@ Completion Rate: ${completionRate}%`)
       </div>
 
       {/* Collections table */}
-      <div className="bg-gradient-to-br from-white to-gray-50 rounded-xl shadow-lg border border-gray-200 overflow-hidden">
+      <div className="fintech-table-container">
         <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white">
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-bold text-gray-900">Collections History</h3>
@@ -997,7 +1001,7 @@ Completion Rate: ${completionRate}%`)
         
         <div className="overflow-x-auto">
           <table className="min-w-full">
-            <thead className="bg-gradient-to-r from-gray-50 to-gray-100">
+            <thead className="bg-slate-50/90 text-slate-500 text-xs font-semibold uppercase tracking-wider">
               <tr>
                 <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Collection ID</th>
                 <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Customer ID</th>
@@ -1028,7 +1032,7 @@ Completion Rate: ${completionRate}%`)
                 <tr key={c.id} className="hover:bg-gray-50 transition-colors duration-200">
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{c.id}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                    {c.customer?.customer_id_display || c.customer_id}
+                    {c.customer?.customer_id_display || c.customer?.name || 'Customer'}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="font-medium text-gray-900">{c.customer?.name || 'N/A'}</div>
@@ -1112,6 +1116,7 @@ Completion Rate: ${completionRate}%`)
                     <th className="px-4 py-3">Customer ID</th>
                     <th className="px-4 py-3">Customer Name</th>
                     <th className="px-4 py-3">Phone</th>
+                    <th className="px-4 py-3">Disbursed On</th>
                     <th className="px-4 py-3">Worker</th>
                     <th className="px-4 py-3">Weekly EMI</th>
                     <th className="px-4 py-3">Status</th>
@@ -1131,7 +1136,7 @@ Completion Rate: ${completionRate}%`)
                             className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
                           />
                         </td>
-                        <td className="px-4 py-3 font-mono text-xs text-gray-500">{loan.customer?.customer_id_display || loan.customer_id}</td>
+                        <td className="px-4 py-3 font-mono text-xs text-gray-500">{loan.customer?.customer_id_display || getLoanDisplayId(loan)}</td>
                         <td className="px-4 py-3 font-medium">{loan.customer?.name || 'N/A'}</td>
                         <td className="px-4 py-3">
                           <span className={`px-2 py-1 text-xs rounded ${
@@ -1139,6 +1144,9 @@ Completion Rate: ${completionRate}%`)
                           }`}>
                             {loan.customer?.phone || 'No Phone'}
                           </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <DisbursementInfo loan={loan} variant="table-cell" />
                         </td>
                         <td className="px-4 py-3">{getWorkerName(loan.team_leader_id)}</td>
                         <td className="px-4 py-3 font-semibold text-green-600">{formatCurrency(weeklyEmi)}</td>

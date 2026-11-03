@@ -45,12 +45,14 @@ export interface Customer {
 
 export interface Loan {
   id: string
+  loan_id_display?: string
   customer_id: string
   customer?: Customer
   amount: number
   status: 'active' | 'closed' | 'pending'
   start_date: string
   end_date: string
+  disbursement_date?: string
   created_at: string
   // Enhanced fields
   loan_purpose?: string
@@ -63,6 +65,9 @@ export interface Loan {
   ifsc_code?: string
   weekly_batch?: 'tuesday' | 'thursday' | 'friday'
   interest_rate?: string
+  previous_loan_id?: string
+  renewed_at?: string
+  renewal_notes?: string
 }
 
 export interface Repayment {
@@ -177,4 +182,19 @@ export interface WeeklyBatchCustomer {
   paid_amount_weeks?: number
   balance_amount?: number
   profit_amount?: number
+}
+export interface LeaderCommissionPayment {
+  id: string
+  leader_id: string
+  employee_id?: string
+  leader_name: string
+  amount?: number
+  amount_paid: number
+  payment_date: string
+  payment_method?: 'Cash' | 'Bank Transfer' | 'UPI' | 'Cheque' | string
+  reference_number?: string
+  notes?: string
+  recorded_by?: string
+  created_at: string
+  updated_at?: string
 }

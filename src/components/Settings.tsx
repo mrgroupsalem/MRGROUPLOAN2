@@ -3,6 +3,8 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import {
+  Eye,
+  EyeOff,
   Settings as SettingsIcon, 
   User, 
   Bell, 
@@ -159,6 +161,12 @@ export default function Settings({ onBack }: SettingsProps) {
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false)
+  const [showNewPassword, setShowNewPassword] = useState(false)
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
+  const [passwordChangeSuccess, setPasswordChangeSuccess] = useState('')
+  const [passwordChangeError, setPasswordChangeError] = useState('')
+  const [lastPasswordChangeDate, setLastPasswordChangeDate] = useState<string>('')
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(false)
   const [sessionTimeout, setSessionTimeout] = useState('30')
 
@@ -376,25 +384,68 @@ export default function Settings({ onBack }: SettingsProps) {
   }
 
   const handleChangePassword = async () => {
+    setPasswordChangeError('')
+    setPasswordChangeSuccess('')
+
+    if (!currentPassword) {
+      setPasswordChangeError('Please enter your current password.')
+      return
+    }
+
+    if (!newPassword || newPassword.length < 12) {
+      setPasswordChangeError('New password must be at least 12 characters and meet enterprise security standards.')
+      return
+    }
+
     if (newPassword !== confirmPassword) {
-      showMessage('✗ Passwords do not match!', 'error')
+      setPasswordChangeError('New password and confirmation password do not match.')
       return
     }
-    
-    if (newPassword.length < 6) {
-      showMessage('✗ Password must be at least 6 characters', 'error')
+
+    if (currentPassword === newPassword) {
+      setPasswordChangeError('New password cannot be identical to your current password.')
       return
     }
-    
+
     setSaving(true)
     try {
-      // Password change logic here (would need backend integration)
-      showMessage('✓ Password changed successfully!', 'success')
-      setCurrentPassword('')
-      setNewPassword('')
-      setConfirmPassword('')
-    } catch (error: any) {
-      showMessage('✗ Error changing password: ' + error.message, 'error')
+      // Get current user session
+      const { data: { session } } = await supabase.auth.getSession()
+      const email = session?.user?.email || 'admin@mrgroups.com'
+
+      const res = await fetch('/api/auth/change-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          currentPassword,
+          newPassword,
+          confirmPassword,
+        }),
+      })
+
+      const data = await res.json()
+
+      if (data.success) {
+        setPasswordChangeSuccess('Your password has been changed successfully.')
+        setLastPasswordChangeDate(new Date().toLocaleDateString('en-IN', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        }))
+        setCurrentPassword('')
+        setNewPassword('')
+        setConfirmPassword('')
+        showMessage('✓ Password changed successfully!', 'success')
+      } else {
+        setPasswordChangeError(data.error || 'Failed to update password. Please check your credentials.')
+        showMessage('✗ ' + (data.error || 'Failed to update password'), 'error')
+      }
+    } catch (err: any) {
+      setPasswordChangeError('Network or server error while updating password.')
+      showMessage('✗ Error changing password: ' + err.message, 'error')
     } finally {
       setSaving(false)
     }
@@ -1118,56 +1169,129 @@ export default function Settings({ onBack }: SettingsProps) {
       {/* Security Settings */}
       {activeTab === 'security' && (
         <div className="bg-white rounded-lg shadow p-6 space-y-6">
-          <h2 className="text-xl font-semibold mb-4">Security Settings</h2>
-          
-          {/* Change Password */}
-          <div className="space-y-4">
-            <h3 className="font-medium text-gray-900">Change Password</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="border-b border-gray-200 pb-4">
+            <h2 className="text-xl font-semibold text-gray-900">Security & Authentication</h2>
+            <p className="text-sm text-gray-500 mt-1">
+              Manage enterprise access credentials, session policies, and account security.
+            </p>
+          </div>
+
+          {/* Change Password Section */}
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Current Password</label>
-                <input
-                 type="password"
-                  value={currentPassword}
-                 onChange={(e) => setCurrentPassword(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                  placeholder="Enter current password"
-                />
+                <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+                  <Lock className="w-4 h-4 text-primary-600" />
+                  Change Administrator Password
+                </h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Update your authentication password without resetting your session.
+                </p>
               </div>
-              <div />
-              
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">New Password</label>
-                <input
-                 type="password"
-                  value={newPassword}
-                 onChange={(e) => setNewPassword(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                  placeholder="Enter new password"
-                />
+              {lastPasswordChangeDate && (
+                <span className="text-xs font-medium text-slate-500 bg-white border px-2.5 py-1 rounded-full">
+                  Last changed: {lastPasswordChangeDate}
+                </span>
+              )}
+            </div>
+
+            {/* Notifications */}
+            {passwordChangeSuccess && (
+              <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center gap-2 text-xs text-emerald-800 font-medium">
+                <CheckCircle className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                <span>{passwordChangeSuccess}</span>
               </div>
-              
+            )}
+            {passwordChangeError && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-xs text-red-800 font-medium">
+                <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0" />
+                <span>{passwordChangeError}</span>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+              {/* Current Password */}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Confirm Password</label>
-                <input
-                 type="password"
-                  value={confirmPassword}
-                 onChange={(e) => setConfirmPassword(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                  placeholder="Confirm new password"
-                />
+                <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1.5">
+                  Current Password *
+                </label>
+                <div className="relative">
+                  <input
+                    type={showCurrentPassword ? 'text' : 'password'}
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    className="w-full pl-3 pr-10 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white"
+                    placeholder="Enter current password"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCurrentPassword(!showCurrentPassword)}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600"
+                  >
+                    {showCurrentPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              {/* New Password */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1.5">
+                  New Password *
+                </label>
+                <div className="relative">
+                  <input
+                    type={showNewPassword ? 'text' : 'password'}
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    className="w-full pl-3 pr-10 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white"
+                    placeholder="Min 12 characters"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewPassword(!showNewPassword)}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600"
+                  >
+                    {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <p className="text-[11px] text-gray-500 mt-1">Requires 12+ chars, uppercase, lowercase, number & symbol.</p>
+              </div>
+
+              {/* Confirm Password */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1.5">
+                  Confirm New Password *
+                </label>
+                <div className="relative">
+                  <input
+                    type={showConfirmPassword ? 'text' : 'password'}
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className="w-full pl-3 pr-10 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white"
+                    placeholder="Re-enter new password"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600"
+                  >
+                    {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
             </div>
-            
-            <button
-             onClick={handleChangePassword}
-              disabled={saving || !currentPassword || !newPassword || !confirmPassword}
-             type="button"
-              className={`btn-primary flex items-center space-x-2 ${(saving || !currentPassword || !newPassword || !confirmPassword) ? 'opacity-50 cursor-not-allowed' : ''}`}
-            >
-              <Lock className="w-4 h-4" />
-              <span>{saving ? 'Changing...' : 'Change Password'}</span>
-            </button>
+
+            <div className="flex justify-end pt-2">
+              <button
+                onClick={handleChangePassword}
+                disabled={saving || !currentPassword || !newPassword || !confirmPassword}
+                type="button"
+                className="btn-primary flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed text-xs py-2 px-4"
+              >
+                <Lock className="w-3.5 h-3.5" />
+                <span>{saving ? 'Verifying & Updating...' : 'Update Password'}</span>
+              </button>
+            </div>
           </div>
 
           {/* Two-Factor Authentication */}

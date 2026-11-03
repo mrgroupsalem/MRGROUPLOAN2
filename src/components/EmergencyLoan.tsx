@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
 import { formatCurrency, formatDate, formatNumber } from '@/lib/utils'
 import { Loan, Customer, Employee } from '@/types'
+import { getLoanDisplayId } from '@/lib/loanIdGenerator'
 import EmergencyLoanApplication from './EmergencyLoanApplication'
 import { 
   ArrowLeft, 
@@ -646,7 +647,7 @@ export default function EmergencyLoan({ onBack }: EmergencyLoanProps) {
 
   // Handle delete loan
   const handleDeleteLoan = async (loan: EmergencyLoanData) => {
-    if (!confirm(`Are you sure you want to delete emergency loan for ${loan.customer?.name || loan.customer_id}? This action cannot be undone.`)) {
+    if (!confirm(`Are you sure you want to delete emergency loan for ${loan.customer?.name || loan.customer?.customer_id_display || getLoanDisplayId(loan)}? This action cannot be undone.`)) {
       return
     }
 
@@ -1032,7 +1033,7 @@ export default function EmergencyLoan({ onBack }: EmergencyLoanProps) {
                 {pendingEmergencyCustomers.map((item) => (
                   <tr key={item.loan.id} className="hover:bg-gray-50">
                     <td className="py-3 pr-4 font-medium text-gray-900">
-                      {item.loan.customer?.name || item.loan.customer_id}
+                      {item.loan.customer?.name || item.loan.customer?.customer_id_display || 'Customer'}
                     </td>
                     <td className="py-3 pr-4 text-gray-700">
                       {item.loan.team_leader?.name || 'Unassigned'}
@@ -1120,7 +1121,7 @@ export default function EmergencyLoan({ onBack }: EmergencyLoanProps) {
         <div className="bg-white rounded-lg shadow-sm border overflow-hidden">
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
+              <thead className="bg-slate-50/90 text-slate-500 text-xs font-semibold uppercase tracking-wider">
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Customer

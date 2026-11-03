@@ -10,6 +10,8 @@ import {
   combineCustomerNames
 } from '@/lib/customerIdGenerator'
 import LocationPickerMap from './LocationPickerMap'
+import { getFirstDueDate, generateDueSchedule, formatDueDate } from '@/lib/dueSchedule'
+import { CheckCircle2, Calendar } from 'lucide-react'
 
 interface AddLoanModalProps {
   customers: Customer[]
@@ -41,6 +43,7 @@ export default function AddLoanModal({ customers, employees, onClose, onSave }: 
     // Loan Details
     amount: '',
     status: 'pending',
+    disbursement_date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }),
     start_date: '',
     end_date: '',
     interest_rate: '',
@@ -95,6 +98,7 @@ export default function AddLoanModal({ customers, employees, onClose, onSave }: 
     input: '',
     error: '',
     successMsg: '',
+    channel: '' as string,
     resendTimer: 0,
     expiresAt: null as number | null,
   })
@@ -116,11 +120,14 @@ export default function AddLoanModal({ customers, employees, onClose, onSave }: 
   }
 
   const handleGenerateOTP = async () => {
-    const mobile = formData.mobile_number
-    if (!mobile || !/^\d{10}$/.test(mobile)) {
-      setErrors(prev => ({ ...prev, mobile_number: 'Enter a valid 10-digit mobile number before generating OTP' }))
+    // Normalize: strip whitespace and non-digit characters (handles paste with spaces, hidden chars, etc.)
+    const mobile = formData.mobile_number.replace(/\D/g, '').trim()
+    if (!mobile || !/^\d{10}$/.test(mobile) || !/^[6-9]/.test(mobile)) {
+      setErrors(prev => ({ ...prev, mobile_number: 'Enter a valid 10-digit Indian mobile number before generating OTP' }))
       return
     }
+    // Sync normalized value into form state so later references are clean
+    setFormData(prev => ({ ...prev, mobile_number: mobile }))
     setOtp(prev => ({ ...prev, sending: true, error: '', successMsg: '' }))
     try {
       const res = await fetch('/api/otp/send', {
@@ -130,6 +137,7 @@ export default function AddLoanModal({ customers, employees, onClose, onSave }: 
       })
       const data = await res.json()
       if (data.success) {
+        setErrors(prev => ({ ...prev, mobile_number: '' }))
         setOtp(prev => ({
           ...prev,
           sending: false,
@@ -137,12 +145,13 @@ export default function AddLoanModal({ customers, employees, onClose, onSave }: 
           verified: false,
           input: '',
           error: '',
-          successMsg: data.message,
+          successMsg: data.message || `OTP sent via ${data.channel || 'SMS'} to +91-${mobile.slice(0,5)}XXXXX`,
+          channel: data.channel || 'SMS',
           expiresAt: Date.now() + (data.expiresIn ?? 300) * 1000,
         }))
         startResendTimer()
       } else {
-        setOtp(prev => ({ ...prev, sending: false, error: data.error || 'Failed to send WhatsApp OTP' }))
+        setOtp(prev => ({ ...prev, sending: false, error: data.error || 'Failed to send OTP. Please try again.' }))
       }
     } catch {
       setOtp(prev => ({ ...prev, sending: false, error: 'Network error. Please try again.' }))
@@ -402,13 +411,14 @@ export default function AddLoanModal({ customers, employees, onClose, onSave }: 
 
     // Check existing customer
     if (field === 'mobile_number') {
-      if (value.length === 10) {
+      const cleanMobile = value.replace(/\D/g, '').trim()
+      if (cleanMobile.length === 10) {
         setErrors(prev => ({ ...prev, mobile_number: '' }))
       }
-      checkExistingCustomer(value)
+      checkExistingCustomer(cleanMobile)
       // Reset OTP if mobile number changes
       if (value !== formData.mobile_number) {
-        setOtp({ sent: false, verified: false, sending: false, verifying: false, input: '', error: '', successMsg: '', resendTimer: 0, expiresAt: null })
+        setOtp(prev => ({ ...prev, sent: false, verified: false, sending: false, verifying: false, input: '', error: '', successMsg: '', resendTimer: 0, expiresAt: null }))
         if (resendIntervalRef.current) clearInterval(resendIntervalRef.current)
       }
     }
@@ -797,34 +807,59 @@ export default function AddLoanModal({ customers, employees, onClose, onSave }: 
         customerId = newCustomer.id
       }
 
-      // Create loan
-      const { data: loanData, error: loanError } = await supabase
+      // Generate Admin Loan ID
+      let tlCode = '100'
+      if (formData.customer_id_display && formData.customer_id_display.length >= 3) {
+        tlCode = formData.customer_id_display.slice(0, 3)
+      }
+      const { count } = await supabase.from('loans').select('id', { count: 'exact', head: true })
+      const nextSeq = String((count || 0) + 1).padStart(3, '0')
+      const adminLoanId = `LN-${tlCode}-${nextSeq}`
+
+      const loanPayload: any = {
+        customer_id: customerId,
+        loan_id_display: adminLoanId,
+        amount: parseFloat(formData.amount),
+        disbursement_date: formData.disbursement_date || null,
+        start_date: formData.start_date,
+        end_date: formData.end_date,
+        interest_rate: String(formData.interest_rate),
+        number_of_weeks: parseInt(formData.number_of_weeks),
+        team_leader_id: formData.team_leader_id,
+        weekly_batch: formData.weekly_batch,
+        loan_purpose: formData.loan_purpose,
+        customer_bank_name: formData.customer_bank_name || null,
+        account_number: formData.account_number || null,
+        ifsc_code: formData.ifsc_code || null,
+        status: 'active'
+      }
+
+      let { data: loanData, error: loanError } = await supabase
         .from('loans')
-        .insert({
-          customer_id: customerId,
-          amount: parseFloat(formData.amount),
-          start_date: formData.start_date,
-          end_date: formData.end_date,
-          interest_rate: String(formData.interest_rate),
-          number_of_weeks: parseInt(formData.number_of_weeks),
-          team_leader_id: formData.team_leader_id,
-          weekly_batch: formData.weekly_batch,
-          loan_purpose: formData.loan_purpose,
-          customer_bank_name: formData.customer_bank_name || null,
-          account_number: formData.account_number || null,
-          ifsc_code: formData.ifsc_code || null,
-          status: 'active'
-        })
+        .insert(loanPayload)
         .select()
         .single()
 
-      if (loanError) throw loanError
+      if (loanError && loanError.message?.includes('loan_id_display')) {
+        delete loanPayload.loan_id_display
+        const retry = await supabase
+          .from('loans')
+          .insert(loanPayload)
+          .select()
+          .single()
+        loanData = retry.data
+        loanError = retry.error
+      }
 
-      alert('Loan created successfully!')
+      if (loanError || !loanData) throw loanError || new Error('Failed to create loan')
+
+      const displayId = (loanData as any)?.loan_id_display || adminLoanId
+      alert(`✅ Loan created successfully! Loan ID: ${displayId}`)
 
       // Create Loan object for callback
       const newLoan: Loan = {
         id: loanData.id,
+        loan_id_display: displayId,
         customer_id: customerId,
         customer: {
           id: customerId,
@@ -844,6 +879,7 @@ export default function AddLoanModal({ customers, employees, onClose, onSave }: 
         },
         amount: parseFloat(formData.amount),
         status: 'active',
+        disbursement_date: formData.disbursement_date || undefined,
         start_date: formData.start_date,
         end_date: formData.end_date,
         interest_rate: String(formData.interest_rate),
@@ -1058,7 +1094,7 @@ export default function AddLoanModal({ customers, employees, onClose, onSave }: 
                   <button
                     type="button"
                     onClick={handleGenerateOTP}
-                    disabled={otp.sending || otp.verified || formData.mobile_number.length !== 10}
+                    disabled={otp.sending || otp.verified || formData.mobile_number.replace(/\D/g, '').trim().length !== 10}
                     className={`px-3 py-2 text-xs font-medium rounded-md border whitespace-nowrap transition-colors ${
                       otp.verified
                         ? 'bg-green-100 text-green-700 border-green-300 cursor-not-allowed'
@@ -1072,15 +1108,20 @@ export default function AddLoanModal({ customers, employees, onClose, onSave }: 
                 </div>
                 {errors.mobile_number && <p className="text-red-500 text-xs mt-1">{errors.mobile_number}</p>}
 
+                {/* OTP Error (when send fails) */}
+                {otp.error && !otp.sent && (
+                  <p className="mt-2 text-xs text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1.5">{otp.error}</p>
+                )}
+
                 {/* OTP Input Section */}
                 {otp.sent && !otp.verified && (
                   <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg space-y-2">
                     <div className="flex items-start gap-2">
-                      <span className="text-xs font-semibold text-green-700 uppercase bg-green-100 px-1.5 py-0.5 rounded">OTP</span>
+                      <span className="text-xs font-semibold text-green-700 uppercase bg-green-100 px-1.5 py-0.5 rounded">{otp.channel || 'OTP'}</span>
                       <div>
-                        <p className="text-xs font-medium text-green-800">WhatsApp OTP Sent</p>
+                        <p className="text-xs font-medium text-green-800">OTP Sent via {otp.channel || 'SMS'}</p>
                         <p className="text-xs text-green-700 mt-0.5">
-                          OTP sent to +91-{formData.mobile_number.slice(0, 5)}XXXXX. Enter it below.
+                          {otp.successMsg || `OTP sent to +91-${formData.mobile_number.slice(0, 5)}XXXXX. Enter it below.`}
                         </p>
                       </div>
                     </div>
@@ -1570,9 +1611,26 @@ export default function AddLoanModal({ customers, employees, onClose, onSave }: 
           </div>
 
           {/* Dates Section */}
-          <div className="bg-gray-50 p-4 rounded-lg">
-            <h3 className="text-lg font-semibold mb-4">Important Dates</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="bg-gray-50 p-4 rounded-lg space-y-4">
+            <h3 className="text-lg font-semibold mb-2 flex items-center gap-2">
+              <Calendar className="w-5 h-5 text-primary-600" />
+              Important Dates
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Loan Disbursement Date *
+                </label>
+                <input
+                  type="date"
+                  value={formData.disbursement_date}
+                  max={new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })}
+                  onChange={(e) => handleInputChange('disbursement_date', e.target.value)}
+                  className="w-full px-3 py-2 border rounded-md border-gray-300 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                />
+                <p className="text-[11px] text-gray-500 mt-1">Date loan amount handed to customer</p>
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Start Date *</label>
                 <input
@@ -1597,6 +1655,42 @@ export default function AddLoanModal({ customers, employees, onClose, onSave }: 
                 <p className="text-xs text-gray-500 mt-1">Auto-calculated from weeks</p>
               </div>
             </div>
+
+            {/* Live Due Schedule Preview Card */}
+            {(() => {
+              if (!formData.disbursement_date || !formData.weekly_batch) return null
+              const firstDue = getFirstDueDate(formData.disbursement_date, formData.weekly_batch)
+              const weeks = parseInt(formData.number_of_weeks) || 15
+              const schedule = generateDueSchedule(formData.disbursement_date, formData.weekly_batch, weeks)
+              const lastDue = schedule.length > 0 ? schedule[schedule.length - 1] : null
+              return (
+                <div className="p-3.5 rounded-xl bg-blue-50/80 border border-blue-200">
+                  <div className="flex items-center justify-between text-xs font-bold text-blue-900 mb-2">
+                    <span className="flex items-center gap-1.5">
+                      <CheckCircle2 className="w-4 h-4 text-blue-600" />
+                      Live Due Schedule Preview (Monday–Sunday Rule)
+                    </span>
+                    <span className="capitalize font-black px-2 py-0.5 rounded bg-blue-100 text-blue-800">
+                      {formData.weekly_batch} Batch
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                    <div className="bg-white p-2 rounded border border-blue-100">
+                      <span className="text-gray-500 block text-[11px]">1st Due Date</span>
+                      <strong className="text-emerald-700 font-bold text-xs">{formatDueDate(firstDue)}</strong>
+                    </div>
+                    <div className="bg-white p-2 rounded border border-blue-100">
+                      <span className="text-gray-500 block text-[11px]">Total Weekly Dues</span>
+                      <strong className="text-gray-900 font-bold text-xs">{weeks} Weeks</strong>
+                    </div>
+                    <div className="bg-white p-2 rounded border border-blue-100">
+                      <span className="text-gray-500 block text-[11px]">Final Due Date</span>
+                      <strong className="text-gray-900 font-bold text-xs">{formatDueDate(lastDue)}</strong>
+                    </div>
+                  </div>
+                </div>
+              )
+            })()}
           </div>
 
           {/* Bank Information Section */}

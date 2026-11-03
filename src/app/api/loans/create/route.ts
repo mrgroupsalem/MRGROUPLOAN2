@@ -96,8 +96,21 @@ export async function POST(request: Request) {
       customerIdDisplay = phone
     }
 
+    // Generate Admin Loan ID
+    let tlCode = '100'
+    if (customerIdDisplay && customerIdDisplay.length >= 3) {
+      tlCode = customerIdDisplay.slice(0, 3)
+    }
+
+    const { count } = await admin
+      .from('loans')
+      .select('id', { count: 'exact', head: true })
+    const nextSeq = String((count || 0) + 1).padStart(3, '0')
+    const adminLoanId = `LN-${tlCode}-${nextSeq}`
+
     const insertPayload: any = {
-      customer_id: customerIdDisplay, // Use customer_id_display instead of UUID
+      customer_id: customerId || customerIdDisplay,
+      loan_id_display: adminLoanId,
       amount,
       status: loanData.status || 'active',
       start_date: startDate,
@@ -112,17 +125,37 @@ export async function POST(request: Request) {
       ifsc_code: loanData.ifsc_code || null
     }
 
-    const { data: loan, error: loanErr } = await admin
+    let loan: any = null
+    let loanErr: any = null
+    const res = await admin
       .from('loans')
       .insert(insertPayload)
-      .select('id')
+      .select('id, loan_id_display')
       .single()
+    loan = res.data
+    loanErr = res.error
 
-    if (loanErr) {
-      return NextResponse.json({ error: loanErr.message || 'Failed to create loan' }, { status: 400 })
+    // If loan_id_display column does not exist yet in schema, retry without it
+    if (loanErr && loanErr.message?.includes('loan_id_display')) {
+      delete insertPayload.loan_id_display
+      const retry = await admin
+        .from('loans')
+        .insert(insertPayload)
+        .select('id')
+        .single()
+      loan = retry.data
+      loanErr = retry.error
     }
 
-    return NextResponse.json({ success: true, loanId: loan.id })
+    if (loanErr || !loan) {
+      return NextResponse.json({ error: loanErr?.message || 'Failed to create loan' }, { status: 400 })
+    }
+
+    return NextResponse.json({ 
+      success: true, 
+      loanId: loan.id,
+      loanIdDisplay: loan.loan_id_display || adminLoanId
+    })
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || 'Unexpected error' }, { status: 500 })
   }

@@ -6,9 +6,11 @@ import { useState, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { CheckCircleIcon, DocumentTextIcon, UserIcon, CalendarIcon, CurrencyDollarIcon } from '@heroicons/react/24/outline'
+import { getLoanDisplayId } from '@/lib/loanIdGenerator'
 
 interface LoanDetails {
   id: string
+  loan_id_display?: string
   amount: number
   status: string
   start_date: string
@@ -221,6 +223,10 @@ function LoanSuccessRoot() {
                     Loan Information
                   </h3>
                   <div className="space-y-2">
+                    <div>
+                      <span className="text-sm font-medium text-gray-500">Loan ID:</span>
+                      <p className="text-blue-900 font-mono font-bold text-base">{getLoanDisplayId(loanDetails)}</p>
+                    </div>
                     <div>
                       <span className="text-sm font-medium text-gray-500">Loan Amount:</span>
                       <p className="text-gray-900 text-lg font-semibold">{formatCurrency(loanDetails.amount)}</p>

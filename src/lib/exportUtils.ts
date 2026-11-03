@@ -1,4 +1,5 @@
 // Export utility functions for Collections and Workers
+import { getLoanDisplayId } from './loanIdGenerator'
 
 export const exportToCSV = (data: any[], filename: string) => {
   if (data.length === 0) {
@@ -135,12 +136,13 @@ export const exportWorkers = (workers: any[], loans: any[], customers: any[]) =>
 
 export const exportLoans = (loans: any[]) => {
   const exportData = loans.map(loan => ({
-    'Loan ID': loan.id,
-    'Customer ID': loan.customer_id,
+    'Loan ID': getLoanDisplayId(loan),
+    'Customer ID': loan.customer?.customer_id_display || loan.customer_id,
     'Customer Name': loan.customer?.name || 'N/A',
     'Customer Phone': loan.customer?.phone || 'N/A',
     'Loan Amount': loan.amount,
     'Status': loan.status,
+    'Disbursement Date': loan.disbursement_date || 'N/A',
     'Start Date': loan.start_date,
     'End Date': loan.end_date,
     'Interest Rate': loan.interest_rate,
@@ -159,7 +161,7 @@ export const exportLoans = (loans: any[]) => {
 
 export const exportCustomers = (customers: any[]) => {
   const exportData = customers.map(customer => ({
-    'Customer ID': customer.id,
+    'Customer ID': customer.customer_id_display || customer.id,
     'Customer Name': customer.name,
     'Phone': customer.phone,
     'Address': customer.address,
