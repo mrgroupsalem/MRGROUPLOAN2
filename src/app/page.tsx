@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { RoleProvider } from '@/components/RoleProvider'
+import { CustomerProfileProvider } from '@/context/CustomerProfileContext'
 import AuthGateway from '@/components/AuthGateway'
 import Navigation from '@/components/Navigation'
 import Dashboard from '@/components/Dashboard'
@@ -68,12 +69,14 @@ export default function Home() {
   return (
     <RoleProvider>
       <AuthGateway>
+        <CustomerProfileProvider>
         <div className="min-h-screen bg-slate-50 flex flex-col lg:flex-row">
           <Navigation currentView={currentView} onViewChange={setCurrentView} />
           <main className="flex-1 pt-16 lg:pt-0 lg:ml-[260px] bg-slate-50 min-h-screen w-full overflow-x-hidden">
             {renderCurrentView()}
           </main>
         </div>
+        </CustomerProfileProvider>
       </AuthGateway>
     </RoleProvider>
   )

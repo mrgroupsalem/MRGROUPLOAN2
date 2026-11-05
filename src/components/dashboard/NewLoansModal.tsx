@@ -4,7 +4,7 @@ import { useState, useMemo } from 'react'
 import { X, Search, Calendar, User, Phone, ArrowUpRight, CheckCircle, RefreshCw } from 'lucide-react'
 import { TodayLoanItem } from '@/hooks/useDashboardData'
 import { formatCurrency } from '@/lib/utils'
-import DisbursementInfo from '@/components/ui/DisbursementInfo'
+import CustomerNameLink from '@/components/ui/CustomerNameLink'
 
 interface NewLoansModalProps {
   isOpen: boolean
@@ -87,7 +87,7 @@ export default function NewLoansModal({
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/50">
           <div>
-            <h3 className="text-base font-bold text-slate-900">New Loans Disbursed</h3>
+            <h3 className="text-base font-bold text-slate-900">New Loans</h3>
             <p className="text-xs text-slate-500 mt-0.5">
               Review all customer loans originated on selected date
             </p>
@@ -144,7 +144,11 @@ export default function NewLoansModal({
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
-                        <p className="text-sm font-bold text-slate-900">{loan.customerName}</p>
+                        <CustomerNameLink
+                          customerId={loan.customerId}
+                          name={loan.customerName}
+                          className="text-sm font-bold text-slate-900"
+                        />
                         <span
                           className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
                             loan.type === 'Renewal'
@@ -166,11 +170,10 @@ export default function NewLoansModal({
                         <span className="capitalize">Batch: {loan.batchDay}</span>
                         <span>{loan.formattedTime}</span>
                       </div>
-                      <div className="mt-2">
-                        <DisbursementInfo
-                          loan={allLoans.find((l) => l.id === loan.id) || loan}
-                          variant="compact"
-                        />
+                      <div className="mt-1 text-xs text-slate-500 flex items-center gap-2">
+                        <span>Start: <strong className="text-slate-700">{allLoans.find((l) => l.id === loan.id)?.start_date || '—'}</strong></span>
+                        <span>•</span>
+                        <span>End: <strong className="text-slate-700">{allLoans.find((l) => l.id === loan.id)?.end_date || '—'}</strong></span>
                       </div>
                     </div>
                   </div>
@@ -206,7 +209,7 @@ export default function NewLoansModal({
         <div className="px-6 py-3 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between text-xs text-slate-500">
           <span>Total Loans: {filteredLoans.length}</span>
           <span>
-            Total Disbursed:{' '}
+            Total Amount:{' '}
             <strong className="text-slate-800">
               {formatCurrency(filteredLoans.reduce((sum, l) => sum + l.amount, 0))}
             </strong>

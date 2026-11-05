@@ -858,7 +858,7 @@ export default function RenewLoanModal({
 
                 {/* Bank Details (Pre-filled / editable) */}
                 <div className="pt-2 border-t">
-                  <span className="text-xs font-semibold text-gray-700 block mb-2">Disbursement Bank Details</span>
+                  <span className="text-xs font-semibold text-gray-700 block mb-2">Customer Bank Details</span>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <input
                       type="text"

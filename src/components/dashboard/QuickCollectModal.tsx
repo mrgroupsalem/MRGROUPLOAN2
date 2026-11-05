@@ -69,11 +69,13 @@ export default function QuickCollectModal({
       }
 
       // 3. Insert record into `collections` table
+      const targetDueDate = customer.breakdown?.find((b) => b.pending > 0)?.dueDate || null
       const { error: insertError } = await supabase.from('collections').insert({
         loan_id: loan.id,
         customer_id: customerUUID,
         amount_collected: numericAmount,
         collection_date: collectionDate || new Date().toISOString().split('T')[0],
+        due_date: targetDueDate,
         status: 'completed',
         worker_id: loan.team_leader_id,
         remaining_balance: remainingBalance,

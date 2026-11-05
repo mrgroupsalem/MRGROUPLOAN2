@@ -19,7 +19,6 @@ import {
   Eye,
   X
 } from 'lucide-react'
-import DisbursementInfo from '@/components/ui/DisbursementInfo'
 
 export interface CustomerLoanHistoryProps {
   customerId: string
@@ -334,7 +333,6 @@ export default function CustomerLoanHistory({
                       <tr>
                         <th className="px-3 py-2.5">Seq #</th>
                         <th className="px-3 py-2.5">Loan ID</th>
-                        <th className="px-3 py-2.5">Disbursed On</th>
                         <th className="px-3 py-2.5">Start / End</th>
                         <th className="px-3 py-2.5">Loan Amount</th>
                         <th className="px-3 py-2.5">Rate / Weeks</th>
@@ -389,11 +387,6 @@ export default function CustomerLoanHistory({
                                     Prev: {getLoanDisplayId({ id: loan.previous_loan_id })}
                                   </p>
                                 )}
-                              </td>
-
-                              {/* Disbursed On */}
-                              <td className="px-3 py-3 whitespace-nowrap">
-                                <DisbursementInfo loan={loan} variant="table-cell" />
                               </td>
 
                               {/* Start / End Date */}

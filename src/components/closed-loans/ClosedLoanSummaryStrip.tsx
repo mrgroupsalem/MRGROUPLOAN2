@@ -15,7 +15,7 @@ import {
 
 interface ClosedLoanSummaryStripProps {
   totalLoans: number
-  totalDisbursed: number
+  totalPrincipal: number
   totalCollected: number
   totalProfit: number
   searchTerm: string
@@ -31,7 +31,7 @@ interface ClosedLoanSummaryStripProps {
 
 export default function ClosedLoanSummaryStrip({
   totalLoans,
-  totalDisbursed,
+  totalPrincipal,
   totalCollected,
   totalProfit,
   searchTerm,
@@ -66,14 +66,14 @@ export default function ClosedLoanSummaryStrip({
           </div>
         </div>
 
-        {/* Total Disbursed */}
+        {/* Total Principal */}
         <div className="p-4 sm:p-5 rounded-2xl bg-white border border-slate-200/90 shadow-sm flex items-center justify-between">
           <div>
             <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 block mb-1">
-              Capital Disbursed
+              Total Principal
             </span>
             <strong className="text-xl sm:text-2xl font-black text-slate-900">
-              {formatCurrency(totalDisbursed)}
+              {formatCurrency(totalPrincipal)}
             </strong>
             <span className="text-[10px] text-slate-500 font-medium block mt-0.5">
               Principal Loaned

@@ -1,125 +1,147 @@
 /**
- * Due Schedule & Disbursement Date Utility for MR Groups Loan Management System
+ * Due Schedule & Loan Date Utility for MR Groups Loan Management System
  * Timezone: Asia/Kolkata (IST)
+ * 
+ * Rules:
+ * - Start Date is ONLY the reference date.
+ * - Week 1 due date = start_date + 7 days.
+ * - Week N due date = start_date + (N * 7) days, for N = 1..number_of_weeks.
+ * - End Date = start_date + (number_of_weeks * 7) days (equals the last installment's due date).
+ * - Total installments = number_of_weeks. start_date itself is NEVER an installment.
  */
 
 export type BatchDay = 'tuesday' | 'thursday' | 'friday'
 
-/**
- * Batch day offsets from Monday in a calendar week:
- * Tuesday = +1, Thursday = +3, Friday = +4
- */
-export const BATCH_DAY_OFFSETS: Record<BatchDay, number> = {
-  tuesday: 1,
-  thursday: 3,
-  friday: 4,
+export const BATCH_DAY_NAMES: Record<BatchDay, string> = {
+  tuesday: 'Tuesday',
+  thursday: 'Thursday',
+  friday: 'Friday',
+}
+
+export const BATCH_DAY_INDEX: Record<BatchDay, number> = {
+  tuesday: 2,
+  thursday: 4,
+  friday: 5,
 }
 
 /**
- * Calculates First Due Date based on Monday-to-Sunday calendar week rule:
- * First due = batch day in the calendar week AFTER the week of disbursement.
- *
- * Example 1: Disbursed Tue 03/11/2026, batch Tue -> Tue 10/11/2026
- * Example 2: Disbursed Wed 04/11/2026, batch Fri -> Fri 13/11/2026
- * Example 3: Disbursed Mon 09/11/2026, batch Thu -> Thu 19/11/2026
- * Example 4: Disbursed Fri 06/11/2026, batch Tue -> Tue 10/11/2026
- * Example 5: Disbursed Sun 08/11/2026, batch Thu -> Thu 12/11/2026
- *
- * @param disbursementDateStr - YYYY-MM-DD string
- * @param batchDay - 'tuesday' | 'thursday' | 'friday'
- * @returns YYYY-MM-DD string representing the first due date
+ * Validates whether a date string (YYYY-MM-DD) falls on the specified weekly batch day.
  */
-export function getFirstDueDate(
-  disbursementDateStr: string,
-  batchDay: BatchDay | string = 'tuesday'
-): string {
-  if (!disbursementDateStr) return ''
+export function isDateOnBatchDay(dateStr: string, batchDay: BatchDay | string = 'tuesday'): boolean {
+  if (!dateStr) return false
+  const parts = dateStr.split('T')[0].split('-').map(Number)
+  if (parts.length < 3 || parts.some(isNaN)) return false
+  const [y, m, d] = parts
+  const dateObj = new Date(Date.UTC(y, m - 1, d))
+  const dayOfWeek = dateObj.getUTCDay()
+  const normalized = (batchDay || 'tuesday').toLowerCase() as BatchDay
+  return dayOfWeek === BATCH_DAY_INDEX[normalized]
+}
 
-  // Parse YYYY-MM-DD
-  const parts = disbursementDateStr.split('T')[0].split('-').map(Number)
+/**
+ * Auto-calculates End Date based on Start Date and number of weeks:
+ * End Date = Start Date + (number_of_weeks * 7) days
+ * equals the last installment's due date.
+ * e.g., Thu 17 Sep 2026 + 15 * 7 days = Thu 31 Dec 2026
+ * e.g., Tue 06 Oct 2026 + 15 * 7 days = Tue 19 Jan 2027
+ */
+export function calculateEndDate(startDateStr: string, numberOfWeeks: number = 15): string {
+  if (!startDateStr) return ''
+  const parts = startDateStr.split('T')[0].split('-').map(Number)
   if (parts.length < 3 || parts.some(isNaN)) return ''
-  const [year, month, day] = parts
-
-  // Use UTC to prevent browser local timezone skew
-  const disbDate = new Date(Date.UTC(year, month - 1, day))
-
-  // 0 = Sunday, 1 = Monday, 2 = Tuesday, ...
-  const dow = disbDate.getUTCDay()
-
-  // In Monday-to-Sunday week, Monday diff:
-  // If Sunday (0), diff is -6 days to get to Monday of this disbursement week
-  // If Monday (1), diff is 0
-  // If Tuesday (2), diff is -1, etc.
-  const diffToMonday = dow === 0 ? -6 : 1 - dow
-
-  const mondayOfDisbWeek = new Date(disbDate)
-  mondayOfDisbWeek.setUTCDate(disbDate.getUTCDate() + diffToMonday)
-
-  // Monday of the NEXT week = Monday of disbursement week + 7 days
-  const nextWeekMonday = new Date(mondayOfDisbWeek)
-  nextWeekMonday.setUTCDate(mondayOfDisbWeek.getUTCDate() + 7)
-
-  // Batch day offset
-  const normalizedBatch = (batchDay || 'tuesday').toLowerCase() as BatchDay
-  const offset = BATCH_DAY_OFFSETS[normalizedBatch] ?? 1
-
-  const firstDue = new Date(nextWeekMonday)
-  firstDue.setUTCDate(nextWeekMonday.getUTCDate() + offset)
-
-  return firstDue.toISOString().slice(0, 10)
+  const [y, m, d] = parts
+  const current = new Date(Date.UTC(y, m - 1, d))
+  const weeks = Math.max(1, numberOfWeeks || 15)
+  current.setUTCDate(current.getUTCDate() + weeks * 7)
+  return current.toISOString().slice(0, 10)
 }
 
 /**
- * Generates array of due dates for the loan tenure.
- * Each subsequent due date is 7 days after the previous one.
+ * Generates the array of installment due dates for a loan.
+ * Start Date is ONLY the reference date.
+ * Week 1 = start_date + 7 days
+ * Week N = start_date + (N * 7) days, N = 1..number_of_weeks
+ * Week number_of_weeks = end_date
  */
 export function generateDueSchedule(
-  disbursementDateStr: string,
-  batchDay: BatchDay | string = 'tuesday',
-  numberOfWeeks: number = 15
+  startDateStr: string,
+  batchDay?: BatchDay | string,
+  numberOfWeeks: number = 15,
+  storedEndDate?: string
 ): string[] {
-  const firstDueStr = getFirstDueDate(disbursementDateStr, batchDay)
-  if (!firstDueStr) return []
+  if (!startDateStr) return []
 
-  const [year, month, day] = firstDueStr.split('-').map(Number)
+  const parts = startDateStr.split('T')[0].split('-').map(Number)
+  if (parts.length < 3 || parts.some(isNaN)) return []
+  const [y, m, d] = parts
   const schedule: string[] = []
 
-  const current = new Date(Date.UTC(year, month - 1, day))
+  const current = new Date(Date.UTC(y, m - 1, d))
   const totalWeeks = Math.max(1, numberOfWeeks || 15)
+
+  // Start Date is NOT an installment; Week 1 is start_date + 7 days
+  current.setUTCDate(current.getUTCDate() + 7)
 
   for (let i = 0; i < totalWeeks; i++) {
     schedule.push(current.toISOString().slice(0, 10))
     current.setUTCDate(current.getUTCDate() + 7)
   }
 
+  // If computed last due date differs from stored end_date, log a warning; never silently change stored dates.
+  if (storedEndDate && schedule.length > 0) {
+    const computedEnd = schedule[schedule.length - 1]
+    const cleanStored = storedEndDate.split('T')[0]
+    if (computedEnd !== cleanStored) {
+      console.warn(
+        `[dueSchedule] Warning: computed last due date (${computedEnd}) differs from stored end_date (${cleanStored}) for start date ${startDateStr}.`
+      )
+    }
+  }
+
   return schedule
 }
 
 /**
- * Formats date into readable string in IST (Asia/Kolkata)
- * e.g. "Wed, 04 Nov 2026"
+ * Checks whether a loan is due in a given week range.
+ * A loan is due in a week only if that week contains one of its due dates,
+ * and the week starts after start_date.
  */
-export function formatDisbursementDate(dateStr?: string | null): string {
-  if (!dateStr) return 'Not recorded'
-  try {
-    const d = new Date(dateStr)
-    if (isNaN(d.getTime())) return 'Not recorded'
+export function isLoanDueInWeek(
+  loan: {
+    start_date?: string
+    created_at?: string
+    end_date?: string
+    number_of_weeks?: number
+    weekly_batch?: string
+  },
+  weekStart: Date,
+  weekEnd: Date
+): boolean {
+  const startStr = loan.start_date || (loan.created_at ? loan.created_at.split('T')[0] : '')
+  if (!startStr) return true
 
-    return d.toLocaleDateString('en-IN', {
-      timeZone: 'Asia/Kolkata',
-      weekday: 'short',
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric',
-    })
-  } catch {
-    return 'Not recorded'
-  }
+  const schedule = generateDueSchedule(
+    startStr,
+    loan.weekly_batch,
+    loan.number_of_weeks || 15,
+    loan.end_date
+  )
+  if (schedule.length === 0) return true
+
+  const weekStartTime = weekStart.getTime()
+  const weekEndTime = weekEnd.getTime()
+
+  // Week contains at least one installment due date
+  return schedule.some((dueStr) => {
+    const [y, m, d] = dueStr.split('-').map(Number)
+    const dueTime = new Date(Date.UTC(y, m - 1, d, 12, 0, 0)).getTime()
+    return dueTime >= weekStartTime && dueTime <= weekEndTime
+  })
 }
 
 /**
  * Formats due date into readable string in IST (Asia/Kolkata)
- * e.g. "Fri, 13 Nov 2026"
+ * e.g. "Tue, 13 Oct 2026"
  */
 export function formatDueDate(dateStr?: string | null): string {
   if (!dateStr) return '—'
@@ -140,32 +162,38 @@ export function formatDueDate(dateStr?: string | null): string {
 }
 
 /**
- * Checks whether a loan is active/due in or before a given week range.
- * If disbursement_date is recorded, loans with first due in future weeks
- * are excluded from pending/expected targets for earlier weeks.
+ * Formats date into readable string in IST (Asia/Kolkata) with weekday
+ * e.g. "Sat, 31 Oct 2026"
  */
-export function isLoanDueInWeek(
-  loan: {
-    disbursement_date?: string
-    start_date?: string
-    weekly_batch?: string
-    created_at?: string
-  },
-  weekStart: Date,
-  weekEnd: Date
-): boolean {
-  if (loan.disbursement_date) {
-    const firstDueStr = getFirstDueDate(loan.disbursement_date, loan.weekly_batch || 'tuesday')
-    if (firstDueStr) {
-      const [y, m, d] = firstDueStr.split('-').map(Number)
-      const firstDueDate = new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999))
-      // If the entire week ends BEFORE the first due date, loan is NOT yet due in this week
-      if (weekEnd.getTime() < new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0)).getTime()) {
-        return false
-      }
-    }
-  }
+export function formatLongDate(dateStr?: string | null): string {
+  if (!dateStr) return '—'
+  try {
+    const d = new Date(dateStr)
+    if (isNaN(d.getTime())) return '—'
 
-  return true
+    return d.toLocaleDateString('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      weekday: 'short',
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+    })
+  } catch {
+    return '—'
+  }
 }
 
+/**
+ * Returns the loan end date. If null, calculates from start_date + (weeks * 7) days.
+ */
+export function getLoanEndDate(loan: {
+  start_date?: string
+  created_at?: string
+  end_date?: string
+  number_of_weeks?: number
+}): string {
+  if (loan.end_date) return loan.end_date
+  const startStr = loan.start_date || (loan.created_at ? loan.created_at.split('T')[0] : '')
+  if (!startStr) return ''
+  return calculateEndDate(startStr, loan.number_of_weeks || 15)
+}

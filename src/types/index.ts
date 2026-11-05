@@ -52,7 +52,7 @@ export interface Loan {
   status: 'active' | 'closed' | 'pending'
   start_date: string
   end_date: string
-  disbursement_date?: string
+  photo_url?: string
   created_at: string
   // Enhanced fields
   loan_purpose?: string
@@ -87,6 +87,7 @@ export interface Collection {
   amount_collected: number
   remaining_balance: number
   collection_date: string
+  due_date?: string
   status: 'completed' | 'partial' | 'pending'
   notes?: string
   created_at: string
