@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { Loan, Collection, Employee } from '@/types'
 import { calculateEMI, calculateTotalPayable, PendingCustomerItem } from '@/hooks/usePendingCollections'
 import { isLoanDueInWeek } from '@/lib/dueSchedule'
+import { DueBreakdownItem, getPendingDueBreakdown } from '@/lib/pendingBreakdown'
 
 export type DayBatchKey = 'tuesday' | 'thursday' | 'friday'
 
@@ -21,6 +22,7 @@ export interface CustomerBatchItem {
   batchDay: DayBatchKey
   teamLeaderId: string
   teamLeaderName: string
+  breakdown?: DueBreakdownItem[]
 }
 
 export interface LeaderBatchGroup {
@@ -95,6 +97,7 @@ export function customerBatchItemToPendingItem(c: CustomerBatchItem): PendingCus
     remainingBalance: remaining,
     totalLoanAmount: totalLoanAmt,
     totalCollectedSoFar: c.collectedAmount,
+    breakdown: c.breakdown || getPendingDueBreakdown(c.loan, []),
   }
 }
 
@@ -323,6 +326,7 @@ export function getWeekBatchHierarchy(
       batchDay: batchKey,
       teamLeaderId: leaderId,
       teamLeaderName: leaderName,
+      breakdown: getPendingDueBreakdown(loan, allLoanCollections, dayConfigs[batchKey].date),
     }
 
     allCustomersMap[loan.id] = customerItem

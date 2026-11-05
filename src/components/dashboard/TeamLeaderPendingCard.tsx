@@ -13,6 +13,8 @@ import {
 } from 'lucide-react'
 import { TeamLeaderPendingGroup, PendingCustomerItem } from '@/hooks/usePendingCollections'
 import { formatCurrency } from '@/lib/utils'
+import CustomerNameLink from '@/components/ui/CustomerNameLink'
+import DueBreakdownPopover from './DueBreakdownPopover'
 
 interface TeamLeaderPendingCardProps {
   group: TeamLeaderPendingGroup
@@ -174,7 +176,11 @@ export default function TeamLeaderPendingCard({
                           </td>
 
                           <td className="py-3 px-2">
-                            <p className="font-bold text-slate-800">{c.customerName}</p>
+                            <CustomerNameLink
+                              customerId={c.loan.customer_id || c.customerIdDisplay}
+                              loan={c.loan}
+                              name={c.customerName}
+                            />
                             <div className="flex items-center gap-2 text-slate-400 text-[11px] mt-0.5">
                               {c.customerPhone ? (
                                 <a
@@ -202,23 +208,25 @@ export default function TeamLeaderPendingCard({
                           </td>
 
                           <td className="py-3 px-3">
-                            {c.missedWeeksCount > 1 ? (
-                              <div className="space-y-1">
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700">
-                                  <AlertCircle className="w-3 h-3" />
-                                  Overdue {c.missedWeeksCount - 1} week{c.missedWeeksCount > 2 ? 's' : ''} ({c.daysOverdue}d)
+                            <DueBreakdownPopover items={c.breakdown || []} customerName={c.customerName}>
+                              {c.missedWeeksCount > 1 ? (
+                                <div className="space-y-1 group-hover/breakdown:opacity-90">
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700">
+                                    <AlertCircle className="w-3 h-3" />
+                                    Overdue {c.missedWeeksCount - 1} week{c.missedWeeksCount > 2 ? 's' : ''} ({c.daysOverdue}d)
+                                  </span>
+                                  <p className="text-[11px] text-slate-500 leading-tight">
+                                    Current: {formatCurrency(c.currentCycleEmi)} + Previous:{' '}
+                                    {formatCurrency(c.previousPendingAmount)}
+                                  </p>
+                                </div>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-800 group-hover/breakdown:opacity-90">
+                                  <Clock className="w-3 h-3" />
+                                  Due this week
                                 </span>
-                                <p className="text-[11px] text-slate-500 leading-tight">
-                                  Current: {formatCurrency(c.currentCycleEmi)} + Previous:{' '}
-                                  {formatCurrency(c.previousPendingAmount)}
-                                </p>
-                              </div>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-800">
-                                <Clock className="w-3 h-3" />
-                                Due this week
-                              </span>
-                            )}
+                              )}
+                            </DueBreakdownPopover>
                           </td>
 
                           <td className="py-3 px-3 font-bold text-rose-600">

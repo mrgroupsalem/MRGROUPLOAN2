@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { Loan, Employee, Collection } from '@/types'
 import { isLoanDueInWeek } from '@/lib/dueSchedule'
+import { getPendingDueBreakdown, DueBreakdownItem } from '@/lib/pendingBreakdown'
 
 export type BatchDay = 'tuesday' | 'thursday' | 'friday'
 
@@ -26,6 +27,7 @@ export interface PendingCustomerItem {
   remainingBalance: number
   totalLoanAmount: number
   totalCollectedSoFar: number
+  breakdown: DueBreakdownItem[]
 }
 
 export interface TeamLeaderPendingGroup {
@@ -115,11 +117,12 @@ export function calculatePendingWithCarryForward({
   })
 
   // Calculate elapsed weeks since loan origination (IST)
+  // Week 1 due date is start_date + 7 days; start_date itself is never an installment.
   const startDate = new Date(loan.start_date || loan.created_at)
   const now = new Date()
   const diffDays = Math.max(0, Math.floor((now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)))
   const totalTenureWeeks = loan.number_of_weeks || 15
-  const elapsedWeeks = Math.min(totalTenureWeeks, Math.max(1, Math.floor(diffDays / 7) + 1))
+  const elapsedWeeks = Math.min(totalTenureWeeks, Math.max(0, Math.floor(diffDays / 7)))
 
   // Expected collection up to this week
   const expectedTotalDueToDate = elapsedWeeks * emi
@@ -186,6 +189,7 @@ export function calculatePendingWithCarryForward({
     remainingBalance,
     totalLoanAmount,
     totalCollectedSoFar,
+    breakdown: getPendingDueBreakdown(loan, collections, new Date()),
   }
 }
 

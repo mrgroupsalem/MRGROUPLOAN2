@@ -96,14 +96,16 @@ export const exportToPDF = (data: any[], filename: string, title: string) => {
 
 export const exportCollections = (collections: any[]) => {
   const exportData = collections.map(collection => ({
-    'Collection ID': collection.id,
-    'Customer Name': collection.customer?.name || 'N/A',
-    'Customer Phone': collection.customer?.phone || 'N/A',
+    'Collection ID': collection.displayId || collection.id,
+    'Customer ID': collection.customer?.customer_id_display || collection.loan?.customer?.customer_id_display || '—',
+    'Customer Name': collection.customer?.name || collection.loan?.customer?.name || 'N/A',
+    'Customer Phone': collection.customer?.phone || collection.loan?.customer?.phone || 'N/A',
     'Loan Amount': collection.loan?.amount || 0,
     'Amount Collected': collection.amount_collected,
-    'Remaining Balance': collection.remaining_balance,
+    'Remaining Balance': collection.remainingAmount ?? collection.remaining_balance ?? 0,
+    'Due No': collection.dueInfoStr || '—',
     'Collection Date': collection.collection_date,
-    'Worker': collection.worker?.name || 'Unassigned',
+    'Worker': collection.worker?.name || collection.loan?.team_leader?.name || 'Unassigned',
     'Status': collection.status
   }))
   
@@ -142,7 +144,6 @@ export const exportLoans = (loans: any[]) => {
     'Customer Phone': loan.customer?.phone || 'N/A',
     'Loan Amount': loan.amount,
     'Status': loan.status,
-    'Disbursement Date': loan.disbursement_date || 'N/A',
     'Start Date': loan.start_date,
     'End Date': loan.end_date,
     'Interest Rate': loan.interest_rate,
@@ -164,6 +165,8 @@ export const exportCustomers = (customers: any[]) => {
     'Customer ID': customer.customer_id_display || customer.id,
     'Customer Name': customer.name,
     'Phone': customer.phone,
+    'Team Leader': customer.leaderName || customer.team_leader?.name || '—',
+    'Weekly Batch': customer.batchDay || customer.weekly_batch || '—',
     'Address': customer.address,
     'Relationship': customer.relationship || 'N/A',
     'Aadhaar Number': customer.aadhaar_number || 'N/A',

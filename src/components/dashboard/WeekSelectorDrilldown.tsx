@@ -31,6 +31,7 @@ import {
 } from '@/hooks/useWeekBatchData'
 import BulkCollectModal from './BulkCollectModal'
 import PhotoLightbox from '@/components/ui/PhotoLightbox'
+import CustomerNameLink from '@/components/ui/CustomerNameLink'
 
 interface WeekSelectorDrilldownProps {
   loans: Loan[]
@@ -337,47 +338,6 @@ export default function WeekSelectorDrilldown({
               This Week
             </button>
           )}
-        </div>
-      </div>
-
-      {/* 3 SUMMARY CARDS (Larger Centered Numbers, Guaranteed Exact Sum) */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="p-5 sm:p-6 rounded-3xl bg-indigo-50/70 border border-indigo-100 flex flex-col items-center justify-center text-center shadow-sm">
-          <span className="text-xs font-extrabold text-indigo-700 uppercase tracking-widest block mb-1">
-            Target Week EMI
-          </span>
-          <span className="text-2xl sm:text-3xl font-black text-indigo-950 block">
-            {formatCurrency(summary.targetWeekEmi)}
-          </span>
-          <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-indigo-100 text-indigo-800 mt-2">
-            Scheduled across 3 Batches
-          </span>
-        </div>
-
-        <div className="p-5 sm:p-6 rounded-3xl bg-emerald-50/70 border border-emerald-100 flex flex-col items-center justify-center text-center shadow-sm">
-          <span className="text-xs font-extrabold text-emerald-700 uppercase tracking-widest block mb-1">
-            Collected This Week
-          </span>
-          <span className="text-2xl sm:text-3xl font-black text-emerald-950 block">
-            {formatCurrency(summary.collectedThisWeek)}
-          </span>
-          <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 mt-2">
-            {summary.targetWeekEmi > 0
-              ? `${Math.round((summary.collectedThisWeek / summary.targetWeekEmi) * 100)}% of Weekly Target`
-              : '0% Collected'}
-          </span>
-        </div>
-
-        <div className="p-5 sm:p-6 rounded-3xl bg-rose-50/70 border border-rose-100 flex flex-col items-center justify-center text-center shadow-sm">
-          <span className="text-xs font-extrabold text-rose-700 uppercase tracking-widest block mb-1">
-            Pending Balance
-          </span>
-          <span className="text-2xl sm:text-3xl font-black text-rose-950 block">
-            {formatCurrency(summary.pendingBalance)}
-          </span>
-          <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800 mt-2">
-            Remaining to Collect
-          </span>
         </div>
       </div>
 
@@ -831,9 +791,12 @@ export default function WeekSelectorDrilldown({
                                             )}
                                           </div>
                                           <div>
-                                            <span className="text-sm sm:text-base font-black text-slate-900 block leading-tight">
-                                              {c.customerName}
-                                            </span>
+                                            <CustomerNameLink
+                                              customerId={c.loan.customer_id}
+                                              name={c.customerName}
+                                              loan={c.loan}
+                                              className="text-sm sm:text-base font-black text-slate-900 block leading-tight"
+                                            />
                                             <span className="text-xs text-slate-400 font-mono">
                                               {c.customerPhone ? `${c.customerPhone} · ` : ''}
                                               {c.loanId}

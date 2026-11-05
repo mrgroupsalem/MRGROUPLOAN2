@@ -12,7 +12,8 @@ import ConfirmDeleteModal from './dashboard/ConfirmDeleteModal'
 import PhotoLightbox from './ui/PhotoLightbox'
 import ClosedLoanSummaryStrip from './closed-loans/ClosedLoanSummaryStrip'
 import ClosedLoanActions from './closed-loans/ClosedLoanActions'
-import DisbursementInfo from './ui/DisbursementInfo'
+import CustomerNameLink from './ui/CustomerNameLink'
+import { useCustomerProfile } from '@/context/CustomerProfileContext'
 import {
   RotateCcw,
   Search,
@@ -31,6 +32,7 @@ import {
 } from 'lucide-react'
 
 export default function ClosedLoans({ onBack }: { onBack: () => void }) {
+  const { openCustomerProfile } = useCustomerProfile()
   const [loans, setLoans] = useState<any[]>([])
   const [employees, setEmployees] = useState<Employee[]>([])
   const [customers, setCustomers] = useState<Customer[]>([])
@@ -220,10 +222,10 @@ export default function ClosedLoans({ onBack }: { onBack: () => void }) {
   // Summary Metrics
   const summaryMetrics = useMemo(() => {
     const totalLoans = loans.length
-    const totalDisbursed = loans.reduce((s, l) => s + (l.amount || 0), 0)
+    const totalPrincipal = loans.reduce((s, l) => s + (l.amount || 0), 0)
     const totalCollected = loans.reduce((s, l) => s + (l.total_collected || 0), 0)
     const totalProfit = loans.reduce((s, l) => s + (l.profit || 0), 0)
-    return { totalLoans, totalDisbursed, totalCollected, totalProfit }
+    return { totalLoans, totalPrincipal, totalCollected, totalProfit }
   }, [loans])
 
   const copyToClipboard = (text: string, id: string) => {
@@ -390,7 +392,7 @@ Generated on: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
       {/* SUMMARY STRIP & FILTERS */}
       <ClosedLoanSummaryStrip
         totalLoans={summaryMetrics.totalLoans}
-        totalDisbursed={summaryMetrics.totalDisbursed}
+        totalPrincipal={summaryMetrics.totalPrincipal}
         totalCollected={summaryMetrics.totalCollected}
         totalProfit={summaryMetrics.totalProfit}
         searchTerm={searchTerm}
@@ -430,8 +432,8 @@ Generated on: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
                   <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-400 font-extrabold uppercase tracking-wider text-[11px]">
                     <th className="py-4 px-5">Borrower Profile</th>
                     <th className="py-4 px-4">Loan ID</th>
-                    <th className="py-4 px-4">Disbursed On</th>
-                    <th className="py-4 px-4">Capital Disbursed</th>
+                    <th className="py-4 px-4">Start / End Date</th>
+                    <th className="py-4 px-4">Principal Amount</th>
                     <th className="py-4 px-4">Total Recovered</th>
                     <th className="py-4 px-4">Profit Earned</th>
                     <th className="py-4 px-4">Team Leader</th>
@@ -474,9 +476,12 @@ Generated on: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
                               )}
                             </div>
                             <div>
-                              <span className="font-black text-slate-900 text-sm block leading-tight">
-                                {loan.customer?.name || loan.customer_name}
-                              </span>
+                              <CustomerNameLink
+                                customer={loan.customer}
+                                loan={loan}
+                                name={loan.customer?.name || loan.customer_name}
+                                nameClassName="font-black text-slate-900 text-sm block leading-tight"
+                              />
                               <span className="text-[11px] text-slate-400 font-mono mt-0.5 block">
                                 {loan.customer?.phone ? `${loan.customer.phone} · ` : ''}
                                 ID: {loan.customer?.customer_id_display || loan.customer_id}
@@ -503,12 +508,13 @@ Generated on: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
                           </div>
                         </td>
 
-                        {/* Disbursed On */}
-                        <td className="py-3.5 px-4 whitespace-nowrap">
-                          <DisbursementInfo loan={loan} variant="table-cell" />
+                        {/* Start / End Date */}
+                        <td className="py-3.5 px-4 whitespace-nowrap text-slate-700">
+                          <div>{loan.start_date ? formatDate(loan.start_date) : '—'}</div>
+                          <div className="text-[10px] text-slate-400">to {loan.end_date ? formatDate(loan.end_date) : '—'}</div>
                         </td>
 
-                        {/* Capital Disbursed */}
+                        {/* Principal Amount */}
                         <td className="py-3.5 px-4 font-bold text-slate-900">
                           {formatCurrency(loan.amount)}
                         </td>
@@ -569,12 +575,7 @@ Generated on: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
                         {/* Actions Component */}
                         <td className="py-3.5 px-5 text-right">
                           <ClosedLoanActions
-                            onView={() =>
-                              setHistoryCustomer({
-                                id: loan.customer?.id || loan.customer_id,
-                                customer: loan.customer,
-                              })
-                            }
+                            onView={() => openCustomerProfile(loan.customer?.id || loan.customer_id, loan)}
                             onRenew={() => setRenewingLoan(loan)}
                             onDownload={() => handleDownloadStatement(loan)}
                             onEdit={() => setEditingLoan(loan)}
@@ -618,10 +619,13 @@ Generated on: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
                           )}
                         </div>
                         <div>
-                          <h5 className="font-black text-slate-900 text-sm">
-                            {loan.customer?.name || loan.customer_name}
-                          </h5>
-                          <span className="text-[11px] text-slate-400 font-mono">
+                          <CustomerNameLink
+                            customer={loan.customer}
+                            loan={loan}
+                            name={loan.customer?.name || loan.customer_name}
+                            nameClassName="font-black text-slate-900 text-sm"
+                          />
+                          <span className="text-[11px] text-slate-400 font-mono block">
                             {getLoanDisplayId(loan)}
                           </span>
                         </div>
@@ -641,7 +645,7 @@ Generated on: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
                     <div className="grid grid-cols-3 gap-2 bg-slate-50 p-3 rounded-2xl text-center text-xs">
                       <div>
                         <span className="text-[10px] text-slate-400 block font-bold uppercase">
-                          Disbursed
+                          Principal
                         </span>
                         <strong className="font-black text-slate-900">
                           {formatCurrency(loan.amount)}
@@ -665,8 +669,9 @@ Generated on: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
                       </div>
                     </div>
 
-                    <div className="pt-1">
-                      <DisbursementInfo loan={loan} variant="compact" />
+                    <div className="flex items-center justify-between pt-1 text-[11px] text-slate-500">
+                      <span>Start: {loan.start_date ? formatDate(loan.start_date) : '—'}</span>
+                      <span>End: {loan.end_date ? formatDate(loan.end_date) : '—'}</span>
                     </div>
 
                     <div className="flex items-center justify-between pt-1">
@@ -674,12 +679,7 @@ Generated on: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
                         Closed on {formatDate(loan.closure_date)}
                       </span>
                       <ClosedLoanActions
-                        onView={() =>
-                          setHistoryCustomer({
-                            id: loan.customer?.id || loan.customer_id,
-                            customer: loan.customer,
-                          })
-                        }
+                        onView={() => openCustomerProfile(loan.customer?.id || loan.customer_id, loan)}
                         onRenew={() => setRenewingLoan(loan)}
                         onDownload={() => handleDownloadStatement(loan)}
                         onEdit={() => setEditingLoan(loan)}
@@ -708,23 +708,7 @@ Generated on: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
         />
       )}
 
-      {/* --- CUSTOMER LOAN HISTORY MODAL --- */}
-      {historyCustomer && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-[75] p-4">
-          <div className="max-w-4xl w-full">
-            <CustomerLoanHistory
-              customerId={historyCustomer.id}
-              customer={historyCustomer.customer}
-              onClose={() => setHistoryCustomer(null)}
-              showRenewAction={true}
-              onRenewLoan={(loanToRenew) => {
-                setHistoryCustomer(null)
-                setRenewingLoan(loanToRenew)
-              }}
-            />
-          </div>
-        </div>
-      )}
+      /* CustomerLoanHistory replaced by unified CustomerProfileDrawer */
 
       {/* --- EDIT LOAN FORM MODAL --- */}
       {editingLoan && (

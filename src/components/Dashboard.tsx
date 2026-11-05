@@ -41,7 +41,7 @@ import TeamLeaderPendingCard from './dashboard/TeamLeaderPendingCard'
 import QuickCollectModal from './dashboard/QuickCollectModal'
 import BulkCollectModal from './dashboard/BulkCollectModal'
 import NewLoansModal from './dashboard/NewLoansModal'
-import CustomerProfileDrawer from './dashboard/CustomerProfileDrawer'
+import { useCustomerProfile } from '@/context/CustomerProfileContext'
 import EditCustomerLoanModal from './dashboard/EditCustomerLoanModal'
 import ConfirmDeleteModal from './dashboard/ConfirmDeleteModal'
 import WeekSelectorDrilldown from './dashboard/WeekSelectorDrilldown'
@@ -53,6 +53,7 @@ interface DashboardProps {
 
 export default function Dashboard({ onViewChange }: DashboardProps) {
   const { user } = useRole()
+  const { openCustomerProfile } = useCustomerProfile()
   const {
     loans,
     customers,
@@ -84,10 +85,7 @@ export default function Dashboard({ onViewChange }: DashboardProps) {
   // Drawer & Modal states
   const [isNewLoansModalOpen, setIsNewLoansModalOpen] = useState(false)
   const [collectCustomer, setCollectCustomer] = useState<PendingCustomerItem | null>(null)
-  const [profileDrawerCustomer, setProfileDrawerCustomer] = useState<{
-    customer: Customer
-    loan?: Loan | null
-  } | null>(null)
+  // profileDrawerCustomer replaced by global useCustomerProfile
   const [editingLoan, setEditingLoan] = useState<Loan | null>(null)
   const [deletingLoan, setDeletingLoan] = useState<Loan | null>(null)
 
@@ -365,56 +363,6 @@ export default function Dashboard({ onViewChange }: DashboardProps) {
             }
           />
         </div>
-
-        {/* Second Row of 4 KPI Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-5">
-          {/* Card 5: Today's Collection */}
-          <KpiCard
-            title="Today's Collection"
-            value={formatCurrency(pendingSummary.todayCollectedAmount)}
-            subLabel={`Target: ${formatCurrency(pendingSummary.todayTargetAmount)}`}
-            icon={Wallet}
-            tone="emerald"
-            progress={pendingSummary.collectionProgress}
-            badge={
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
-                {pendingSummary.collectionProgress}% Met
-              </span>
-            }
-          />
-
-          {/* Card 6: Total Profit */}
-          <KpiCard
-            title="Total Realized Profit"
-            value={formatCurrency(financialStats.totalProfit)}
-            subLabel="Cumulative interest earned"
-            icon={TrendingUp}
-            tone="cyan"
-            badge={
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-100 text-cyan-800">
-                Net Profit
-              </span>
-            }
-          />
-
-          {/* Card 7: Total Balance Outstanding */}
-          <KpiCard
-            title="Outstanding Balance"
-            value={formatCurrency(financialStats.totalOutstandingBalance)}
-            subLabel="Principal + remaining interest"
-            icon={Clock}
-            tone="amber"
-          />
-
-          {/* Card 8: Total Disbursed */}
-          <KpiCard
-            title="Total Disbursed"
-            value={formatCurrency(financialStats.totalDisbursed)}
-            subLabel="Total capital originated"
-            icon={CreditCard}
-            tone="purple"
-          />
-        </div>
       </div>
 
       {/* PART 1: HERO SECTION - PENDING COLLECTION TODAY BY TEAM LEADER */}
@@ -506,16 +454,7 @@ export default function Dashboard({ onViewChange }: DashboardProps) {
                 onToggleSelectGroup={handleToggleSelectGroup}
                 defaultExpanded={idx === 0}
                 onCollect={(customer) => setCollectCustomer(customer)}
-                onViewProfile={(customer) => {
-                  const custObj = customers.find((c) => c.id === customer.loan.customer_id) || {
-                    id: customer.loan.customer_id,
-                    name: customer.customerName,
-                    phone: customer.customerPhone,
-                    address: '',
-                    created_at: customer.loan.created_at,
-                  }
-                  setProfileDrawerCustomer({ customer: custObj, loan: customer.loan })
-                }}
+                onViewProfile={(customer) => openCustomerProfile(customer.customerIdDisplay || customer.loan.customer_id, customer.loan)}
               />
             ))}
           </div>
@@ -528,16 +467,7 @@ export default function Dashboard({ onViewChange }: DashboardProps) {
           loans={loans}
           collections={collections}
           employees={employees}
-          onViewCustomer={(loan) => {
-            const cust = customers.find((c) => c.id === loan.customer_id) || {
-              id: loan.customer_id,
-              name: loan.customer?.name || 'Customer',
-              phone: loan.customer?.phone || '',
-              address: '',
-              created_at: loan.created_at,
-            }
-            setProfileDrawerCustomer({ customer: cust, loan })
-          }}
+          onViewCustomer={(loan) => openCustomerProfile(loan.customer?.id || loan.customer_id, loan)}
           onEditCustomer={(loan) => setEditingLoan(loan)}
           onDeleteCustomer={(loan) => setDeletingLoan(loan)}
           onRefresh={handleRefreshAll}
@@ -550,7 +480,7 @@ export default function Dashboard({ onViewChange }: DashboardProps) {
         <div className="lg:col-span-2 bg-white rounded-3xl border border-slate-200/80 shadow-[0_4px_20px_rgb(0,0,0,0.03)] p-6 flex flex-col justify-between">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h3 className="text-base font-bold text-slate-900">Originations & Disbursement Trend</h3>
+              <h3 className="text-base font-bold text-slate-900">Originations & Lending Trend</h3>
               <p className="text-xs text-slate-500 mt-0.5">Last 6 weeks loan capital originated</p>
             </div>
             <span className="text-xs font-semibold px-2.5 py-1 rounded-xl bg-slate-100 text-slate-700">
@@ -679,8 +609,8 @@ export default function Dashboard({ onViewChange }: DashboardProps) {
         onClose={() => setIsNewLoansModalOpen(false)}
         loans={newLoansStats.todayLoansList}
         allLoans={loans}
-        onViewCustomer={() => {
-          if (onViewChange) onViewChange('customers')
+        onViewCustomer={(customerId) => {
+          openCustomerProfile(customerId)
         }}
       />
 
@@ -701,23 +631,6 @@ export default function Dashboard({ onViewChange }: DashboardProps) {
           selectedCustomers={selectedItemsList}
           onClose={() => setIsBulkModalOpen(false)}
           onSuccess={handleBulkSuccess}
-        />
-      )}
-
-      {/* 4. Customer Profile Drawer (A-to-Z profile) */}
-      {profileDrawerCustomer && (
-        <CustomerProfileDrawer
-          isOpen={!!profileDrawerCustomer}
-          customer={profileDrawerCustomer.customer}
-          loan={profileDrawerCustomer.loan}
-          allLoans={loans}
-          collections={collections}
-          onClose={() => setProfileDrawerCustomer(null)}
-          onCollect={(loan) => {
-            const pItem = pendingCustomers.find((p) => p.loanId === loan.id)
-            if (pItem) setCollectCustomer(pItem)
-          }}
-          onEdit={(loan) => setEditingLoan(loan)}
         />
       )}
 

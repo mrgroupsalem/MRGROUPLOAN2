@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { Loan, Customer, Employee, Collection, DashboardStats } from '@/types'
 import { formatCurrency, formatDate, formatNumber } from '@/lib/utils'
-import DisbursementInfo from '@/components/ui/DisbursementInfo'
+import CustomerNameLink from '@/components/ui/CustomerNameLink'
 import { 
   Download, 
   FileText, 
@@ -371,7 +371,7 @@ export default function Reports({ onBack }: ReportsProps) {
             <div className="bg-white rounded-lg shadow p-6">
               <h3 className="text-lg font-semibold mb-4 flex items-center">
                 <TrendingUp className="w-5 h-5 mr-2" />
-                Loan Disbursement Trend
+                Loan Issuance Trend
               </h3>
               <div className="space-y-3">
                 {loanTrendData.map((item, idx) => (
@@ -527,7 +527,6 @@ export default function Reports({ onBack }: ReportsProps) {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Customer</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Amount</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Disbursed On</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Start Date</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">End Date</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Team Leader</th>
@@ -548,7 +547,7 @@ export default function Reports({ onBack }: ReportsProps) {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div>
-                          <div className="text-sm font-medium text-gray-900">{loan.customer?.name}</div>
+                          <CustomerNameLink customer={loan.customer} loan={loan} name={loan.customer?.name} nameClassName="text-sm font-medium text-gray-900" />
                           <div className="text-sm text-gray-500">{loan.customer?.phone}</div>
                         </div>
                       </td>
@@ -564,10 +563,7 @@ export default function Reports({ onBack }: ReportsProps) {
                           {loan.status}
                         </span>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <DisbursementInfo loan={loan} variant="table-cell" />
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
                         {formatDate(loan.start_date)}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">

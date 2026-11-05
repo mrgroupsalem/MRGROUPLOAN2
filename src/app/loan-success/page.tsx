@@ -313,7 +313,7 @@ function LoanSuccessRoot() {
           <ul className="space-y-2 text-blue-800">
             <li className="flex items-start">
               <span className="text-blue-600 mr-2">•</span>
-              <span>Your loan is now active and ready for disbursement.</span>
+              <span>Your loan is now active.</span>
             </li>
             <li className="flex items-start">
               <span className="text-blue-600 mr-2">•</span>

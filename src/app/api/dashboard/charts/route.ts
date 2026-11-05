@@ -48,8 +48,8 @@ export async function GET(request: Request) {
       return NextResponse.json(chartData)
     }
 
-    if (chartType === 'disbursements') {
-      // Get disbursement data (using loan amounts as proxy)
+    if (chartType === 'originations' || chartType === 'loans') {
+      // Get loan originations data
       const { data: loans, error } = await supabase
         .from('loans')
         .select('amount, created_at')
@@ -59,8 +59,8 @@ export async function GET(request: Request) {
         .order('created_at', { ascending: true })
 
       if (error) {
-        console.error('Error fetching disbursements:', error)
-        return NextResponse.json({ error: 'Failed to fetch disbursement data' }, { status: 500 })
+        console.error('Error fetching loan originations:', error)
+        return NextResponse.json({ error: 'Failed to fetch loan data' }, { status: 500 })
       }
 
       // Group by date

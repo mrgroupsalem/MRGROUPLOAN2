@@ -6,6 +6,8 @@ import { formatCurrency, formatDate, formatNumber } from '@/lib/utils'
 import { Loan, Customer, Employee } from '@/types'
 import { getLoanDisplayId } from '@/lib/loanIdGenerator'
 import EmergencyLoanApplication from './EmergencyLoanApplication'
+import CustomerNameLink from './ui/CustomerNameLink'
+import { useCustomerProfile } from '@/context/CustomerProfileContext'
 import { 
   ArrowLeft, 
   Flame, 
@@ -49,6 +51,7 @@ interface TeamLeaderGroup {
 }
 
 export default function EmergencyLoan({ onBack }: EmergencyLoanProps) {
+  const { openCustomerProfile } = useCustomerProfile()
   const [loans, setLoans] = useState<Loan[]>([])
   const [customers, setCustomers] = useState<Customer[]>([])
   const [employees, setEmployees] = useState<Employee[]>([])
@@ -971,7 +974,7 @@ export default function EmergencyLoan({ onBack }: EmergencyLoanProps) {
                        {collection.day_number || '-'}
                      </td>
                      <td className="py-3 pr-4 font-medium text-gray-900">
-                       {collection.customer?.name || collection.customer_name || collection.loan?.customer_id || 'N/A'}
+                       <CustomerNameLink customer={collection.customer} loan={collection.loan} name={collection.customer?.name || collection.customer_name || collection.loan?.customer_id || 'N/A'} />
                        {collection.collection_count > 1 && (
                          <span className="ml-2 text-xs text-gray-500">({collection.collection_count} collections)</span>
                        )}
@@ -1166,14 +1169,13 @@ export default function EmergencyLoan({ onBack }: EmergencyLoanProps) {
                     >
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center space-x-2">
-                          <Flame className="w-4 h-4 text-red-600" />
-                          <span
-                            className={`font-medium ${
-                              loan.status === 'active' ? 'text-red-700' : 'text-gray-600'
-                            }`}
-                          >
-                            {loan.customer?.name || loan.customer_id}
-                          </span>
+                          <Flame className="w-4 h-4 text-red-600 flex-shrink-0" />
+                          <CustomerNameLink
+                            customer={loan.customer}
+                            loan={loan}
+                            name={loan.customer?.name || loan.customer_id}
+                            nameClassName={loan.status === 'active' ? 'text-red-700 font-medium' : 'text-gray-600 font-medium'}
+                          />
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
@@ -1247,7 +1249,7 @@ export default function EmergencyLoan({ onBack }: EmergencyLoanProps) {
                       <td className="px-6 py-4 whitespace-nowrap text-sm">
                         <div className="flex items-center space-x-2">
                           <button
-                            onClick={() => setSelectedLoan(loan)}
+                            onClick={() => openCustomerProfile(loan.customer?.id || loan.customer_id, loan)}
                             className="p-1.5 text-blue-600 hover:bg-blue-50 rounded transition-colors"
                             title="View Details"
                           >

@@ -24,7 +24,8 @@ import { Loan, Customer, Employee } from '@/types'
 import { supabase } from '@/lib/supabase'
 import { formatCurrency } from '@/lib/utils'
 import PhotoLightbox from './ui/PhotoLightbox'
-import { getFirstDueDate, generateDueSchedule, formatDueDate } from '@/lib/dueSchedule'
+import { isDateOnBatchDay, calculateEndDate, generateDueSchedule, formatDueDate } from '@/lib/dueSchedule'
+import { getNextCustomerIdForTeamLeader } from '@/lib/customerIdGenerator'
 
 interface EditLoanFormProps {
   loan: Loan
@@ -111,7 +112,6 @@ export default function EditLoanForm({
     loan_purpose: loan.loan_purpose || 'Business Expansion',
 
     // C) Dates
-    disbursement_date: loan.disbursement_date || '',
     start_date: loan.start_date || (loan.created_at ? loan.created_at.split('T')[0] : ''),
     end_date: loan.end_date || '',
 
@@ -178,9 +178,7 @@ export default function EditLoanForm({
 
     let newEndDate = formData.end_date
     if (formData.start_date) {
-      const sd = new Date(formData.start_date)
-      sd.setDate(sd.getDate() + weeks * 7)
-      newEndDate = sd.toISOString().split('T')[0]
+      newEndDate = calculateEndDate(formData.start_date, weeks)
     }
 
     setFormData((prev) => ({
@@ -195,9 +193,7 @@ export default function EditLoanForm({
     const weeks = parseInt(formData.number_of_weeks) || 15
     let newEndDate = ''
     if (startDateStr) {
-      const sd = new Date(startDateStr)
-      sd.setDate(sd.getDate() + weeks * 7)
-      newEndDate = sd.toISOString().split('T')[0]
+      newEndDate = calculateEndDate(startDateStr, weeks)
     }
 
     setFormData((prev) => ({
@@ -216,19 +212,14 @@ export default function EditLoanForm({
   const calculatedInterest = Math.max(0, calculatedTotal - numAmount)
 
   // Due schedule preview calculations
-  const previewFirstDue = useMemo(() => {
-    if (!formData.disbursement_date) return null
-    return getFirstDueDate(formData.disbursement_date, formData.weekly_batch || 'tuesday')
-  }, [formData.disbursement_date, formData.weekly_batch])
-
   const previewSchedule = useMemo(() => {
-    if (!formData.disbursement_date) return []
+    if (!formData.start_date) return []
     return generateDueSchedule(
-      formData.disbursement_date,
+      formData.start_date,
       formData.weekly_batch || 'tuesday',
       numWeeks
     )
-  }, [formData.disbursement_date, formData.weekly_batch, numWeeks])
+  }, [formData.start_date, formData.weekly_batch, numWeeks])
 
   const previewLastDue = previewSchedule.length > 0 ? previewSchedule[previewSchedule.length - 1] : null
 
@@ -324,7 +315,11 @@ export default function EditLoanForm({
     if (!formData.address.trim()) errs.address = 'Address is required'
     if (!numAmount || numAmount <= 0) errs.amount = 'Valid loan amount is required'
     if (!formData.team_leader_id) errs.team_leader_id = 'Team Leader is required'
-    if (!formData.start_date) errs.start_date = 'Start Date is required'
+    if (!formData.start_date) {
+      errs.start_date = 'Start Date is required'
+    } else if (formData.weekly_batch && !isDateOnBatchDay(formData.start_date, formData.weekly_batch)) {
+      errs.start_date = `Start date must fall on a ${formData.weekly_batch.charAt(0).toUpperCase() + formData.weekly_batch.slice(1)}`
+    }
 
     if (formData.pan_number && !/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(formData.pan_number)) {
       errs.pan_number = 'PAN format must be ABCDE1234F'
@@ -336,6 +331,28 @@ export default function EditLoanForm({
 
     setErrors(errs)
     return Object.keys(errs).length === 0
+  }
+
+  const handleTeamLeaderChange = async (newLeaderId: string) => {
+    const oldLeaderId = formData.team_leader_id
+    setFormData((prev) => ({ ...prev, team_leader_id: newLeaderId }))
+    if (!newLeaderId || newLeaderId === oldLeaderId || newLeaderId === loan.team_leader_id) {
+      return
+    }
+    const selectedEmp = employees.find((e) => e.id === newLeaderId) || null
+    const empName = selectedEmp?.name || newLeaderId
+    const confirmed = window.confirm(
+      `Team Leader changed to ${empName}.\n\nDo you want to regenerate the Customer ID for this new leader?`
+    )
+    if (confirmed) {
+      try {
+        const nextId = await getNextCustomerIdForTeamLeader(selectedEmp)
+        setFormData((prev) => ({ ...prev, customer_id_display: nextId.customerId }))
+        alert(`New Customer ID generated: ${nextId.customerId}`)
+      } catch (err) {
+        console.error('Error generating customer ID on leader change:', err)
+      }
+    }
   }
 
   // Handle Save
@@ -414,7 +431,6 @@ export default function EditLoanForm({
           team_leader_id: formData.team_leader_id,
           weekly_batch: formData.weekly_batch,
           loan_purpose: formData.loan_purpose,
-          disbursement_date: formData.disbursement_date || null,
           start_date: formData.start_date,
           end_date: formData.end_date,
           customer_bank_name: formData.customer_bank_name || undefined,
@@ -863,9 +879,7 @@ export default function EditLoanForm({
                 </label>
                 <select
                   value={formData.team_leader_id}
-                  onChange={(e) =>
-                    setFormData((prev) => ({ ...prev, team_leader_id: e.target.value }))
-                  }
+                  onChange={(e) => handleTeamLeaderChange(e.target.value)}
                   className="w-full h-11 px-3.5 rounded-xl border border-slate-200 bg-white font-bold text-slate-900"
                 >
                   <option value="">Select Team Leader</option>
@@ -950,35 +964,24 @@ export default function EditLoanForm({
               </h4>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
               <div>
                 <label className="font-bold text-slate-700 block mb-1">
-                  Loan Disbursement Date <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="date"
-                  value={formData.disbursement_date}
-                  max={new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })}
-                  onChange={(e) =>
-                    setFormData((prev) => ({ ...prev, disbursement_date: e.target.value }))
-                  }
-                  className="w-full h-11 px-3.5 rounded-xl border border-slate-200 bg-white text-slate-900 font-medium"
-                />
-                <span className="text-[10px] text-slate-400 mt-0.5 block">
-                  Date funds handed to customer
-                </span>
-              </div>
-
-              <div>
-                <label className="font-bold text-slate-700 block mb-1">
-                  Start Date <span className="text-rose-500">*</span>
+                  Start Date (First Due Date) <span className="text-rose-500">*</span>
                 </label>
                 <input
                   type="date"
                   value={formData.start_date}
                   onChange={(e) => handleStartDateChange(e.target.value)}
-                  className="w-full h-11 px-3.5 rounded-xl border border-slate-200 bg-white text-slate-900 font-medium"
+                  className={`w-full h-11 px-3.5 rounded-xl border ${errors.start_date ? 'border-rose-300 ring-1 ring-rose-300' : 'border-slate-200'} bg-white text-slate-900 font-medium`}
                 />
+                {errors.start_date ? (
+                  <span className="text-[10px] text-rose-500 mt-0.5 block">{errors.start_date}</span>
+                ) : (
+                  <span className="text-[10px] text-slate-400 mt-0.5 block">
+                    First weekly installment date (must fall on selected Weekly Batch)
+                  </span>
+                )}
               </div>
 
               <div>
@@ -991,16 +994,19 @@ export default function EditLoanForm({
                   value={formData.end_date}
                   className="w-full h-11 px-3.5 rounded-xl border border-slate-200 bg-slate-100 text-slate-700 font-medium cursor-not-allowed"
                 />
+                <span className="text-[10px] text-slate-400 mt-0.5 block">
+                  Auto-calculated: Start Date + {numWeeks} weeks (equals final installment due date)
+                </span>
               </div>
             </div>
 
             {/* Live Due Schedule Preview Card */}
-            {formData.disbursement_date && previewFirstDue && (
+            {formData.start_date && (
               <div className="p-3.5 rounded-xl bg-indigo-50/70 border border-indigo-100 animate-fadeIn">
                 <div className="flex items-center justify-between text-[11px] font-bold text-indigo-900 mb-2">
                   <span className="flex items-center gap-1.5">
                     <CheckCircle2 className="w-3.5 h-3.5 text-indigo-600" />
-                    First Due & Repayment Schedule Preview
+                    Due Schedule Preview
                   </span>
                   <span className="capitalize font-black text-indigo-700">
                     {formData.weekly_batch} Batch
@@ -1008,9 +1014,9 @@ export default function EditLoanForm({
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
                   <div className="bg-white/80 p-2 rounded-lg border border-indigo-100/60">
-                    <span className="text-[10px] text-slate-500 block font-semibold">1st Due Date</span>
+                    <span className="text-[10px] text-slate-500 block font-semibold">1st Due Date (Week 1)</span>
                     <strong className="text-emerald-700 font-extrabold text-xs">
-                      {formatDueDate(previewFirstDue)}
+                      {previewSchedule.length > 0 ? formatDueDate(previewSchedule[0]) : '—'}
                     </strong>
                   </div>
                   <div className="bg-white/80 p-2 rounded-lg border border-indigo-100/60">

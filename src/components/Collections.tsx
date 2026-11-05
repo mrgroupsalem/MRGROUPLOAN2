@@ -20,7 +20,8 @@ import { exportCollections } from '@/lib/exportUtils'
 import { formatCurrency, formatDate, formatNumber } from '@/lib/utils'
 import { Collection, Loan, Customer, Employee } from '@/types'
 import { getLoanDisplayId } from '@/lib/loanIdGenerator'
-import DisbursementInfo from '@/components/ui/DisbursementInfo'
+import { generateDueSchedule } from '@/lib/dueSchedule'
+import CustomerNameLink from '@/components/ui/CustomerNameLink'
 
 interface CollectionsProps {
   onBack: () => void
@@ -46,6 +47,7 @@ export default function Collections({ onBack }: CollectionsProps) {
   const [dateFilter, setDateFilter] = useState('')
   const [workerFilter, setWorkerFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'partial' | 'pending'>('all')
+  const [batchFilter, setBatchFilter] = useState<'all' | 'tuesday' | 'thursday' | 'friday'>('all')
   const [pendingBatchFilter, setPendingBatchFilter] = useState<'' | WeeklyBatch>('')
 
   // Initial load
@@ -54,23 +56,36 @@ export default function Collections({ onBack }: CollectionsProps) {
       try {
         setLoading(true)
         const [collRes, loansRes, custRes, empRes, pendingRes] = await Promise.all([
-          supabase.from('collections').select(`*, loan:loans(*), worker:employees(*)`).order('collection_date', { ascending: false }),
+          supabase
+            .from('collections')
+            .select(`*, loan:loans(*, customer:customers(*)), customer:customers(*), worker:employees(*)`)
+            .order('collection_date', { ascending: false }),
           supabase.from('loans').select(`*, team_leader:employees(*)`),
           supabase.from('customers').select(`*`),
           supabase.from('employees').select(`*`),
           supabase.from('pending_customers').select('loan_id, pending_count, emi_amount')
         ])
 
-        if (!collRes.error) setCollections(collRes.data || [])
+        const allCustomers = custRes.data || []
+        if (!collRes.error) {
+          const enrichedCols = (collRes.data || []).map((c: any) => {
+            const cust = c.customer || c.loan?.customer || allCustomers.find((u: any) => u.id === c.customer_id)
+            return {
+              ...c,
+              customer: cust
+            }
+          })
+          setCollections(enrichedCols)
+        }
         if (!loansRes.error) {
           // Manually join customer data with loans - use customer_id from loan to match with customer.id
           const loansWithCustomers = (loansRes.data || []).map(loan => {
-            const customer = (custRes.data || []).find(c => c.id === loan.customer_id)
+            const customer = allCustomers.find(c => c.id === loan.customer_id)
             return { ...loan, customer }
           })
           setLoans(loansWithCustomers)
         }
-        if (!custRes.error) setCustomers(custRes.data || [])
+        if (!custRes.error) setCustomers(allCustomers)
         if (!empRes.error) setEmployees(empRes.data || [])
         
         // Load pending customers from database
@@ -115,25 +130,36 @@ export default function Collections({ onBack }: CollectionsProps) {
     try {
       setLoading(true)
       const [collRes, loansRes, custRes, empRes, pendingRes] = await Promise.all([
-        supabase.from('collections').select(`*, loan:loans(*), worker:employees(*)`).order('collection_date', { ascending: false }),
+        supabase
+          .from('collections')
+          .select(`*, loan:loans(*, customer:customers(*)), customer:customers(*), worker:employees(*)`)
+          .order('collection_date', { ascending: false }),
         supabase.from('loans').select(`*, team_leader:employees(*)`),
         supabase.from('customers').select(`*`),
         supabase.from('employees').select(`*`),
         supabase.from('pending_customers').select('loan_id, pending_count, emi_amount')
       ])
-      if (!collRes.error) setCollections(collRes.data || [])
+      const allCustomers = custRes.data || []
+      if (!collRes.error) {
+        const enrichedCols = (collRes.data || []).map((c: any) => {
+          const cust = c.customer || c.loan?.customer || allCustomers.find((u: any) => u.id === c.customer_id)
+          return {
+            ...c,
+            customer: cust
+          }
+        })
+        setCollections(enrichedCols)
+      }
       if (!loansRes.error) {
         // Manually join customer data with loans - use customer_id from loan to match with customer.id
         const loansWithCustomers = (loansRes.data || []).map(loan => {
-          const customer = (custRes.data || []).find(c => c.id === loan.customer_id)
+          const customer = allCustomers.find(c => c.id === loan.customer_id)
           return { ...loan, customer }
         })
         setLoans(loansWithCustomers)
       }
-      if (!custRes.error) setCustomers(custRes.data || [])
+      if (!custRes.error) setCustomers(allCustomers)
       if (!empRes.error) setEmployees(empRes.data || [])
-      
-      // Refresh pending customers from database
       if (!pendingRes.error) {
         const map: Record<string, { count: number, emi: number }> = {}
         ;(pendingRes.data || []).forEach(r => { 
@@ -268,7 +294,24 @@ export default function Collections({ onBack }: CollectionsProps) {
 
   // Actions
   const handleExport = () => {
-    try { exportCollections(collections) } catch {}
+    try {
+      const enrichedForExport = filteredCollections.map((c) => {
+        const displayId = collectionDisplayIdMap.get(c.id) || c.id
+        const customer = c.customer || c.loan?.customer
+        const dueInfo = collectionDueNoMap.get(c.id)
+        const remaining = collectionRemainingMap.get(c.id) ?? (Number(c.remaining_balance) || 0)
+        return {
+          ...c,
+          displayId,
+          customer,
+          dueInfoStr: dueInfo ? `${dueInfo.installmentNumber}/${dueInfo.totalWeeks}${dueInfo.isPartial ? ' (partial)' : ''}` : '—',
+          remainingAmount: remaining,
+        }
+      })
+      exportCollections(enrichedForExport)
+    } catch (e) {
+      console.error('Export error:', e)
+    }
   }
 
   const handleCollectAmount = (batch: WeeklyBatch) => {
@@ -356,6 +399,7 @@ This will remove the customer from pending list.`
           customer_id: customerUUID!, // Use customer UUID
           amount_collected: totalAmount,
           collection_date: new Date().toISOString(),
+          due_date: new Date().toISOString().split('T')[0],
           status: 'completed',
           worker_id: loan.team_leader_id,
           remaining_balance: remainingBalance,
@@ -483,6 +527,7 @@ This will remove the customer from pending list.`
             customer_id: customerUUID!, // Use customer UUID
             amount_collected: weeklyEmi,
             collection_date: new Date().toISOString(),
+            due_date: new Date().toISOString().split('T')[0],
             status: 'completed',
             worker_id: loan.team_leader_id,
             remaining_balance: remainingBalance,
@@ -566,9 +611,8 @@ This will remove the customer from pending list.`
 
   const recalculateAllRemainingBalances = async () => {
     try {
-      // Example recalculation: update each collection's remaining based on simple model
       for (const l of loans) {
-        const totalAmount = Number(l.amount) || 0
+        const totalAmount = Number((l as any).total_payable || (l as any).total_payable_amount || (l as any).total_amount) || calculateTotalPayable(l)
         const sorted = collections.filter(c => c.loan_id === l.id).sort((a, b) => new Date(a.collection_date).getTime() - new Date(b.collection_date).getTime())
         let collected = 0
         for (const c of sorted) {
@@ -577,8 +621,19 @@ This will remove the customer from pending list.`
           await supabase.from('collections').update({ remaining_balance: remaining }).eq('id', c.id)
         }
       }
-      const { data } = await supabase.from('collections').select(`*, loan:loans(*), worker:employees(*)`).order('collection_date', { ascending: false })
-      setCollections(data || [])
+      const { data } = await supabase
+        .from('collections')
+        .select(`*, loan:loans(*, customer:customers(*)), customer:customers(*), worker:employees(*)`)
+        .order('collection_date', { ascending: false })
+      const allCustomers = customers
+      const enrichedCols = (data || []).map((c: any) => {
+        const cust = c.customer || c.loan?.customer || allCustomers.find((u: any) => u.id === c.customer_id)
+        return {
+          ...c,
+          customer: cust
+        }
+      })
+      setCollections(enrichedCols)
       alert('All remaining balances have been recalculated successfully!')
     } catch (e) {
       console.error(e)
@@ -586,24 +641,168 @@ This will remove the customer from pending list.`
     }
   }
 
+  // 1. Continuous running sequence Collection ID per customer (Option A: e.g. 47526010122-001, -002, -003)
+  const collectionDisplayIdMap = useMemo(() => {
+    const map = new Map<string, string>()
+    const byCustomer = new Map<string, Collection[]>()
+
+    collections.forEach((c) => {
+      const custId =
+        c.customer?.customer_id_display ||
+        c.loan?.customer?.customer_id_display ||
+        (c.customer_id ? String(c.customer_id) : '') ||
+        'COL'
+      if (!byCustomer.has(custId)) byCustomer.set(custId, [])
+      byCustomer.get(custId)!.push(c)
+    })
+
+    byCustomer.forEach((custCols, custId) => {
+      const sorted = [...custCols].sort((a, b) => {
+        const dateA = new Date(a.collection_date || 0).getTime()
+        const dateB = new Date(b.collection_date || 0).getTime()
+        if (dateA !== dateB) return dateA - dateB
+        const createdA = new Date(a.created_at || 0).getTime()
+        const createdB = new Date(b.created_at || 0).getTime()
+        if (createdA !== createdB) return createdA - createdB
+        return String(a.id).localeCompare(String(b.id))
+      })
+
+      sorted.forEach((c, idx) => {
+        const seq = String(idx + 1).padStart(3, '0')
+        map.set(c.id, `${custId}-${seq}`)
+      })
+    })
+
+    return map
+  }, [collections])
+
+  // 2. Remaining balance per collection: Total Payable minus cumulative collected up to and including this record
+  const collectionRemainingMap = useMemo(() => {
+    const map = new Map<string, number>()
+    const byLoan = new Map<string, Collection[]>()
+
+    collections.forEach((c) => {
+      const loanId = c.loan_id
+      if (!loanId) return
+      if (!byLoan.has(loanId)) byLoan.set(loanId, [])
+      byLoan.get(loanId)!.push(c)
+    })
+
+    byLoan.forEach((loanCols, loanId) => {
+      const loan = loans.find((l) => l.id === loanId) || loanCols[0]?.loan
+      const totalPayable = loan
+        ? Number(
+            (loan as any).total_payable ||
+            (loan as any).total_payable_amount ||
+            (loan as any).total_amount
+          ) || calculateTotalPayable(loan)
+        : 0
+
+      const sorted = [...loanCols].sort((a, b) => {
+        const dateA = new Date(a.collection_date || 0).getTime()
+        const dateB = new Date(b.collection_date || 0).getTime()
+        if (dateA !== dateB) return dateA - dateB
+        const createdA = new Date(a.created_at || 0).getTime()
+        const createdB = new Date(b.created_at || 0).getTime()
+        if (createdA !== createdB) return createdA - createdB
+        return String(a.id).localeCompare(String(b.id))
+      })
+
+      let running = 0
+      sorted.forEach((c) => {
+        running += Number(c.amount_collected) || 0
+        const rem = Math.max(0, totalPayable - running)
+        map.set(c.id, rem)
+      })
+    })
+
+    return map
+  }, [collections, loans])
+
+  // 3. Due No mapping with schedule / FIFO
+  const collectionDueNoMap = useMemo(() => {
+    const map = new Map<
+      string,
+      { installmentNumber: number; totalWeeks: number; isPartial: boolean; dueDateStr?: string }
+    >()
+    const byLoan = new Map<string, Collection[]>()
+
+    collections.forEach((c) => {
+      const loanId = c.loan_id
+      if (!loanId) return
+      if (!byLoan.has(loanId)) byLoan.set(loanId, [])
+      byLoan.get(loanId)!.push(c)
+    })
+
+    byLoan.forEach((loanCols, loanId) => {
+      const loan = loans.find((l) => l.id === loanId) || loanCols[0]?.loan
+      const totalWeeks = loan?.number_of_weeks || 15
+      const schedule = loan?.start_date
+        ? generateDueSchedule(loan.start_date, loan.weekly_batch, totalWeeks, loan.end_date)
+        : []
+
+      const sorted = [...loanCols].sort((a, b) => {
+        const dateA = new Date(a.collection_date || 0).getTime()
+        const dateB = new Date(b.collection_date || 0).getTime()
+        if (dateA !== dateB) return dateA - dateB
+        const createdA = new Date(a.created_at || 0).getTime()
+        const createdB = new Date(b.created_at || 0).getTime()
+        if (createdA !== createdB) return createdA - createdB
+        return String(a.id).localeCompare(String(b.id))
+      })
+
+      sorted.forEach((c, idx) => {
+        let installmentNumber = idx + 1
+        let matchedDueDate = c.due_date
+
+        if (c.due_date && schedule.length > 0) {
+          const cDueClean = String(c.due_date).slice(0, 10)
+          const foundIdx = schedule.findIndex((d) => d === cDueClean)
+          if (foundIdx !== -1) {
+            installmentNumber = foundIdx + 1
+          }
+        }
+
+        const isPartial = (c.status || '').toLowerCase() === 'partial'
+        map.set(c.id, {
+          installmentNumber,
+          totalWeeks,
+          isPartial,
+          dueDateStr: matchedDueDate || undefined,
+        })
+      })
+    })
+
+    return map
+  }, [collections, loans])
+
   // Filters for table
   const filteredCollections = useMemo(() => {
     let list = [...collections]
     if (searchTerm) {
-      const q = searchTerm.toLowerCase()
-      list = list.filter(c =>
-        c.id.toLowerCase().includes(q) ||
-        (c.customer?.name || '').toLowerCase().includes(q) ||
-        (c.customer?.customer_id_display || '').toLowerCase().includes(q) ||
-        (c.loan?.loan_id_display || '').toLowerCase().includes(q) ||
-        getLoanDisplayId(c.loan).toLowerCase().includes(q)
-      )
+      const q = searchTerm.toLowerCase().trim()
+      list = list.filter((c) => {
+        const displayId = collectionDisplayIdMap.get(c.id) || ''
+        const custDisplayId = c.customer?.customer_id_display || c.loan?.customer?.customer_id_display || ''
+        const custName = c.customer?.name || c.loan?.customer?.name || ''
+        const custPhone = c.customer?.phone || c.loan?.customer?.phone || ''
+        const loanDisplayId = c.loan?.loan_id_display || getLoanDisplayId(c.loan) || ''
+        return (
+          c.id.toLowerCase().includes(q) ||
+          displayId.toLowerCase().includes(q) ||
+          custDisplayId.toLowerCase().includes(q) ||
+          custName.toLowerCase().includes(q) ||
+          custPhone.includes(q) ||
+          loanDisplayId.toLowerCase().includes(q)
+        )
+      })
     }
-    if (dateFilter) list = list.filter(c => String(c.collection_date).slice(0, 10) === dateFilter)
-    if (workerFilter) list = list.filter(c => (c.worker?.id || c.worker_id) === workerFilter)
-    if (statusFilter !== 'all') list = list.filter(c => (c.status || '').toLowerCase() === statusFilter)
+    if (dateFilter) list = list.filter((c) => String(c.collection_date).slice(0, 10) === dateFilter)
+    if (workerFilter) list = list.filter((c) => (c.worker?.id || c.worker_id) === workerFilter)
+    if (statusFilter !== 'all') list = list.filter((c) => (c.status || '').toLowerCase() === statusFilter)
+    if (batchFilter !== 'all') list = list.filter((c) => (c.loan?.weekly_batch || '').toLowerCase() === batchFilter.toLowerCase())
     return list
-  }, [collections, searchTerm, dateFilter, workerFilter, statusFilter])
+  }, [collections, searchTerm, dateFilter, workerFilter, statusFilter, batchFilter, collectionDisplayIdMap])
 
   if (loading) {
     return (
@@ -739,7 +938,13 @@ This will remove the customer from pending list.`
                   <tbody className="divide-y">
                     {displayPending.map(p => (
                       <tr key={p.loan.id}>
-                        <td className="py-2 pr-4">{p.loan.customer?.name || p.loan.customer?.customer_id_display || 'Customer'}</td>
+                        <td className="py-2 pr-4">
+                          <CustomerNameLink
+                            customer={p.loan.customer}
+                            loan={p.loan}
+                            name={p.loan.customer?.name || p.loan.customer?.customer_id_display || 'Customer'}
+                          />
+                        </td>
                         <td className="py-2 pr-4 capitalize">{p.loan.weekly_batch || '-'}</td>
                         <td className="py-2 pr-4">{getWorkerName(p.loan.team_leader_id)}</td>
                         <td className="py-2 pr-4">{p.count}</td>
@@ -932,14 +1137,14 @@ Completion Rate: ${completionRate}%`)
           </div>
         </div>
         
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
           <div className="space-y-2">
             <label className="text-sm font-semibold text-gray-700">Search</label>
             <div className="relative">
               <input 
                 value={searchTerm} 
                 onChange={e => setSearchTerm(e.target.value)} 
-                placeholder="Search by customer or loan ID" 
+                placeholder="Search collection, customer, phone..." 
                 className="w-full pl-10 pr-4 py-2.5 fintech-input"
               />
               <div className="absolute left-3 top-1/2 transform -translate-y-1/2">
@@ -954,8 +1159,22 @@ Completion Rate: ${completionRate}%`)
               type="date" 
               value={dateFilter} 
               onChange={e => setDateFilter(e.target.value)} 
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300"
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 text-sm"
             />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-semibold text-gray-700">Batch</label>
+            <select 
+              value={batchFilter} 
+              onChange={e => setBatchFilter(e.target.value as any)} 
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 text-sm"
+            >
+              <option value="all">All Batches</option>
+              <option value="tuesday">Tuesday</option>
+              <option value="thursday">Thursday</option>
+              <option value="friday">Friday</option>
+            </select>
           </div>
           
           <div className="space-y-2">
@@ -963,7 +1182,7 @@ Completion Rate: ${completionRate}%`)
             <select 
               value={workerFilter} 
               onChange={e => setWorkerFilter(e.target.value)} 
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300"
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 text-sm"
             >
               <option value="">All Workers</option>
               {employees.map(emp => (
@@ -977,7 +1196,7 @@ Completion Rate: ${completionRate}%`)
             <select 
               value={statusFilter} 
               onChange={e => setStatusFilter(e.target.value as any)} 
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300"
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 text-sm"
             >
               <option value="all">All Status</option>
               <option value="completed">Completed</option>
@@ -988,13 +1207,13 @@ Completion Rate: ${completionRate}%`)
         </div>
       </div>
 
-      {/* Collections table */}
-      <div className="fintech-table-container">
+      {/* Collections table (Desktop & Tablet) */}
+      <div className="hidden md:block fintech-table-container">
         <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white">
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-bold text-gray-900">Collections History</h3>
             <div className="flex items-center gap-2">
-              <span className="text-sm text-gray-600">{filteredCollections.length} records</span>
+              <span className="text-sm text-gray-600 font-medium">{filteredCollections.length} records</span>
             </div>
           </div>
         </div>
@@ -1009,15 +1228,16 @@ Completion Rate: ${completionRate}%`)
                 <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Loan Amount</th>
                 <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Collected</th>
                 <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Remaining</th>
+                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Due No.</th>
                 <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Collection Date</th>
-                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Worker</th>
+                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Worker (Leader)</th>
                 <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
               {filteredCollections.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-6 py-12 text-center">
+                  <td colSpan={10} className="px-6 py-12 text-center">
                     <div className="flex flex-col items-center gap-3">
                       <div className="p-4 bg-gray-100 rounded-full">
                         <CreditCard className="w-8 h-8 text-gray-400" />
@@ -1028,38 +1248,215 @@ Completion Rate: ${completionRate}%`)
                   </td>
                 </tr>
               )}
-              {filteredCollections.map(c => (
-                <tr key={c.id} className="hover:bg-gray-50 transition-colors duration-200">
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{c.id}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                    {c.customer?.customer_id_display || c.customer?.name || 'Customer'}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="font-medium text-gray-900">{c.customer?.name || 'N/A'}</div>
-                    <div className="text-sm text-gray-500">{c.customer?.phone || ''}</div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatCurrency(c.loan?.amount || 0)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-green-600">{formatCurrency(Number(c.amount_collected) || 0)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-amber-600">{formatCurrency(Number(c.remaining_balance) || 0)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatDate(c.collection_date)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                      {c.worker?.name || 'Unassigned'}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold ${
-                      (c.status || '').toLowerCase() === 'completed' ? 'bg-green-100 text-green-800' :
-                      (c.status || '').toLowerCase() === 'partial' ? 'bg-amber-100 text-amber-800' : 'bg-red-100 text-red-800'
-                    }`}>
-                      {(c.status || 'pending').replace(/^./, s => s.toUpperCase())}
-                    </span>
-                  </td>
-                </tr>
-              ))}
+              {filteredCollections.map(c => {
+                const displayId = collectionDisplayIdMap.get(c.id) || c.id
+                const customer = c.customer || c.loan?.customer
+                const dueInfo = collectionDueNoMap.get(c.id)
+                const remainingVal = collectionRemainingMap.get(c.id) ?? (Number(c.remaining_balance) || 0)
+                const progressPct = dueInfo ? Math.min(100, Math.round((dueInfo.installmentNumber / dueInfo.totalWeeks) * 100)) : 0
+                const isProgressComplete = dueInfo ? dueInfo.installmentNumber >= dueInfo.totalWeeks : false
+
+                return (
+                  <tr key={c.id} className="hover:bg-gray-50 transition-colors duration-200">
+                    {/* 1. COLLECTION ID */}
+                    <td className="px-6 py-4 whitespace-nowrap text-xs font-mono font-semibold text-slate-800">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded bg-slate-100 text-slate-800 border border-slate-200">
+                        {displayId}
+                      </span>
+                    </td>
+
+                    {/* 2. CUSTOMER ID */}
+                    <td className="px-6 py-4 whitespace-nowrap text-xs font-mono font-medium text-slate-700">
+                      {customer?.customer_id_display ? (
+                        customer.customer_id_display
+                      ) : (
+                        <span className="text-gray-400 italic">Customer not found</span>
+                      )}
+                    </td>
+
+                    {/* 3. CUSTOMER */}
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <CustomerNameLink
+                        customer={customer}
+                        loan={c.loan}
+                        name={customer?.name || 'Customer not found'}
+                        nameClassName="text-sm font-bold text-gray-900 hover:text-primary-600"
+                      />
+                      {customer?.phone && (
+                        <div className="text-xs text-gray-500 font-normal">{customer.phone}</div>
+                      )}
+                    </td>
+
+                    {/* 4. LOAN AMOUNT */}
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-medium">
+                      {formatCurrency(c.loan?.amount || 0)}
+                    </td>
+
+                    {/* 5. COLLECTED */}
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-emerald-600">
+                      {formatCurrency(Number(c.amount_collected) || 0)}
+                    </td>
+
+                    {/* 6. REMAINING */}
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-amber-600">
+                      {formatCurrency(remainingVal)}
+                    </td>
+
+                    {/* 7. DUE NO. */}
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      {dueInfo ? (
+                        <div
+                          className="flex flex-col gap-1 min-w-[90px]"
+                          title={`Due Date: ${dueInfo.dueDateStr ? formatDate(dueInfo.dueDateStr) : 'FIFO order'} · Installment ${dueInfo.installmentNumber} of ${dueInfo.totalWeeks}`}
+                        >
+                          <div className="flex items-center justify-between text-xs font-bold">
+                            <span className={dueInfo.isPartial ? 'text-amber-700' : 'text-slate-800'}>
+                              {dueInfo.installmentNumber}/{dueInfo.totalWeeks}
+                              {dueInfo.isPartial && <span className="ml-1 text-[10px] text-amber-600 font-medium">(partial)</span>}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-mono">{progressPct}%</span>
+                          </div>
+                          <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all duration-300 ${
+                                isProgressComplete ? 'bg-emerald-500' : dueInfo.isPartial ? 'bg-amber-500' : 'bg-primary-600'
+                              }`}
+                              style={{ width: `${progressPct}%` }}
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-slate-400">—</span>
+                      )}
+                    </td>
+
+                    {/* 8. COLLECTION DATE */}
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                      {formatDate(c.collection_date)}
+                    </td>
+
+                    {/* 9. WORKER (LEADER) */}
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="flex flex-col">
+                        <span className="text-xs font-bold text-slate-800">
+                          {c.worker?.name || c.loan?.team_leader?.name || 'Unassigned'}
+                        </span>
+                        {(c.worker?.leader_id || c.loan?.team_leader?.leader_id || c.worker?.id) && (
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            ID: {c.worker?.leader_id || c.loan?.team_leader?.leader_id || c.worker?.id}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+
+                    {/* 10. STATUS */}
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span
+                        className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold capitalize border ${
+                          (c.status || '').toLowerCase() === 'completed'
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : (c.status || '').toLowerCase() === 'partial'
+                            ? 'bg-amber-50 text-amber-700 border-amber-200'
+                            : 'bg-red-50 text-red-700 border-red-200'
+                        }`}
+                      >
+                        {c.status || 'pending'}
+                      </span>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* Mobile Collections Card View (< 768px) */}
+      <div className="block md:hidden space-y-3">
+        {filteredCollections.length === 0 ? (
+          <div className="p-8 text-center bg-white rounded-xl border border-slate-200 text-sm text-gray-500">
+            No collections found matching current filters.
+          </div>
+        ) : (
+          filteredCollections.map((c) => {
+            const displayId = collectionDisplayIdMap.get(c.id) || c.id
+            const customer = c.customer || c.loan?.customer
+            const dueInfo = collectionDueNoMap.get(c.id)
+            const remainingVal = collectionRemainingMap.get(c.id) ?? (Number(c.remaining_balance) || 0)
+            const progressPct = dueInfo ? Math.min(100, Math.round((dueInfo.installmentNumber / dueInfo.totalWeeks) * 100)) : 0
+            const isProgressComplete = dueInfo ? dueInfo.installmentNumber >= dueInfo.totalWeeks : false
+
+            return (
+              <div key={c.id} className="bg-white rounded-xl p-4 border border-slate-200 shadow-xs space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-xs font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-800 border border-slate-200">
+                    {displayId}
+                  </span>
+                  <span
+                    className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold capitalize border ${
+                      (c.status || '').toLowerCase() === 'completed'
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        : (c.status || '').toLowerCase() === 'partial'
+                        ? 'bg-amber-50 text-amber-700 border-amber-200'
+                        : 'bg-red-50 text-red-700 border-red-200'
+                    }`}
+                  >
+                    {c.status || 'pending'}
+                  </span>
+                </div>
+
+                <div>
+                  <CustomerNameLink
+                    customer={customer}
+                    loan={c.loan}
+                    name={customer?.name || 'Customer not found'}
+                    nameClassName="text-sm font-bold text-gray-900"
+                  />
+                  <div className="text-xs text-gray-500 font-mono mt-0.5">
+                    ID: {customer?.customer_id_display || '—'} {customer?.phone && `· ${customer.phone}`}
+                  </div>
+                </div>
+
+                {dueInfo && (
+                  <div className="bg-slate-50 p-2.5 rounded-lg space-y-1">
+                    <div className="flex items-center justify-between text-xs font-bold">
+                      <span className="text-gray-600">Due No: <span className={dueInfo.isPartial ? 'text-amber-700' : 'text-slate-900'}>{dueInfo.installmentNumber}/{dueInfo.totalWeeks}{dueInfo.isPartial && ' (partial)'}</span></span>
+                      <span className="text-[10px] text-gray-400 font-mono">{progressPct}%</span>
+                    </div>
+                    <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${
+                          isProgressComplete ? 'bg-emerald-500' : dueInfo.isPartial ? 'bg-amber-500' : 'bg-primary-600'
+                        }`}
+                        style={{ width: `${progressPct}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-3 gap-2 pt-1 border-t border-slate-100 text-center">
+                  <div className="bg-slate-50 p-2 rounded-lg">
+                    <div className="text-[10px] text-gray-500">Loan Amt</div>
+                    <div className="text-xs font-bold text-gray-900">{formatCurrency(c.loan?.amount || 0)}</div>
+                  </div>
+                  <div className="bg-emerald-50 p-2 rounded-lg">
+                    <div className="text-[10px] text-emerald-700">Collected</div>
+                    <div className="text-xs font-bold text-emerald-800">{formatCurrency(Number(c.amount_collected) || 0)}</div>
+                  </div>
+                  <div className="bg-amber-50 p-2 rounded-lg">
+                    <div className="text-[10px] text-amber-700">Remaining</div>
+                    <div className="text-xs font-bold text-amber-800">{formatCurrency(remainingVal)}</div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between text-xs text-gray-500 pt-1 border-t border-slate-100">
+                  <span>{formatDate(c.collection_date)}</span>
+                  <span className="font-medium text-slate-700">Worker: {c.worker?.name || c.loan?.team_leader?.name || 'Unassigned'}</span>
+                </div>
+              </div>
+            )
+          })
+        )}
       </div>
 
       {/* Batch Collection Modal */}
@@ -1116,7 +1513,6 @@ Completion Rate: ${completionRate}%`)
                     <th className="px-4 py-3">Customer ID</th>
                     <th className="px-4 py-3">Customer Name</th>
                     <th className="px-4 py-3">Phone</th>
-                    <th className="px-4 py-3">Disbursed On</th>
                     <th className="px-4 py-3">Worker</th>
                     <th className="px-4 py-3">Weekly EMI</th>
                     <th className="px-4 py-3">Status</th>
@@ -1137,16 +1533,19 @@ Completion Rate: ${completionRate}%`)
                           />
                         </td>
                         <td className="px-4 py-3 font-mono text-xs text-gray-500">{loan.customer?.customer_id_display || getLoanDisplayId(loan)}</td>
-                        <td className="px-4 py-3 font-medium">{loan.customer?.name || 'N/A'}</td>
+                        <td className="px-4 py-3 font-medium">
+                          <CustomerNameLink
+                            customer={loan.customer}
+                            loan={loan}
+                            name={loan.customer?.name || 'N/A'}
+                          />
+                        </td>
                         <td className="px-4 py-3">
                           <span className={`px-2 py-1 text-xs rounded ${
                             loan.customer?.phone ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-500'
                           }`}>
                             {loan.customer?.phone || 'No Phone'}
                           </span>
-                        </td>
-                        <td className="px-4 py-3">
-                          <DisbursementInfo loan={loan} variant="table-cell" />
                         </td>
                         <td className="px-4 py-3">{getWorkerName(loan.team_leader_id)}</td>
                         <td className="px-4 py-3 font-semibold text-green-600">{formatCurrency(weeklyEmi)}</td>

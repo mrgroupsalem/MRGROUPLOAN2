@@ -1,25 +1,32 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Plus, Search, Edit, Trash2, Eye, Phone, MapPin, Download, X } from 'lucide-react'
 import { Customer, Loan } from '@/types'
 import { formatDate } from '@/lib/utils'
 import { exportCustomers } from '@/lib/exportUtils'
 import { supabase } from '@/lib/supabase'
 import CustomerLoanHistory from './CustomerLoanHistory'
-import DisbursementInfo from '@/components/ui/DisbursementInfo'
+import CustomerNameLink from '@/components/ui/CustomerNameLink'
+import { LeaderCell, BatchPill } from '@/components/ui/LeaderBatchCells'
+import { useCustomerProfile } from '@/context/CustomerProfileContext'
 
 interface CustomerManagementProps {
   onBack: () => void
 }
 
 export default function CustomerManagement({ onBack }: CustomerManagementProps) {
+  const { openCustomerProfile } = useCustomerProfile()
   const [customers, setCustomers] = useState<Customer[]>([])
   const [loans, setLoans] = useState<Loan[]>([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
   const [loanStatusFilter, setLoanStatusFilter] = useState<'all' | 'active' | 'closed' | 'pending'>('all')
   const [loanTypeFilter, setLoanTypeFilter] = useState<'all' | 'emergency' | 'regular'>('all')
+  const [leaderFilter, setLeaderFilter] = useState('all')
+  const [batchFilter, setBatchFilter] = useState('all')
+  const [sortField, setSortField] = useState<string | null>(null)
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc')
   const [showAddModal, setShowAddModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
@@ -45,7 +52,7 @@ export default function CustomerManagement({ onBack }: CustomerManagementProps) 
 
         // Load regular loans and emergency loans in parallel
         const [loansRes, emergencyLoansRes] = await Promise.all([
-          supabase.from('loans').select('*'),
+          supabase.from('loans').select('*, team_leader:employees(*)'),
           supabase.from('emergency_loans').select('*')
         ])
 
@@ -89,12 +96,6 @@ export default function CustomerManagement({ onBack }: CustomerManagementProps) 
     loadData()
   }, [])
 
-  const filteredCustomers = customers.filter(customer =>
-    customer.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    customer.phone.includes(searchTerm) ||
-    customer.address.toLowerCase().includes(searchTerm.toLowerCase())
-  )
-
   const getCustomerLoans = (customer: Customer) => {
     // Match loans by customer_id_display, phone number, or customer primary ID
     let matched = loans.filter(loan =>
@@ -121,6 +122,157 @@ export default function CustomerManagement({ onBack }: CustomerManagementProps) 
       (l.customer_id === customer.id || l.customer_id === customer.customer_id_display || l.customer_id === customer.phone) &&
       l.loan_purpose === 'emergency'
     ))
+  }
+
+  // Get customer's active or latest loan assignment
+  const getCustomerActiveLoan = (customer: Customer): Loan | undefined => {
+    const custLoans = loans.filter(
+      (loan) =>
+        loan.customer_id === customer.id ||
+        loan.customer_id === customer.customer_id_display ||
+        loan.customer_id === customer.phone
+    )
+    if (custLoans.length === 0) return undefined
+    return custLoans.find((l) => l.status === 'active') || custLoans[0]
+  }
+
+  // Unique leaders for filter dropdown
+  const uniqueLeaders = useMemo(() => {
+    const map = new Map<string, { id: string; name: string }>()
+    loans.forEach((l) => {
+      if (l.team_leader && l.team_leader.name) {
+        map.set(l.team_leader.id || l.team_leader.name, {
+          id: l.team_leader.id || l.team_leader.name,
+          name: l.team_leader.name,
+        })
+      }
+    })
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name))
+  }, [loans])
+
+  const filteredCustomers = useMemo(() => {
+    let list = customers.filter((customer) => {
+      // 1. Search term
+      const q = searchTerm.toLowerCase().trim()
+      if (q) {
+        const matchesName = (customer.name || '').toLowerCase().includes(q)
+        const matchesPhone = (customer.phone || '').includes(q)
+        const matchesAddress = (customer.address || '').toLowerCase().includes(q)
+        const matchesDisplayId = (customer.customer_id_display || '').toLowerCase().includes(q)
+        if (!matchesName && !matchesPhone && !matchesAddress && !matchesDisplayId) {
+          return false
+        }
+      }
+
+      // 2. Status filter
+      if (loanStatusFilter !== 'all') {
+        const custLoans = loans.filter(
+          (loan) =>
+            loan.customer_id === customer.id ||
+            loan.customer_id === customer.customer_id_display ||
+            loan.customer_id === customer.phone
+        )
+        const hasMatchingStatus = custLoans.some(
+          (l) => (l.status || '').toLowerCase() === loanStatusFilter
+        )
+        if (!hasMatchingStatus) return false
+      }
+
+      // 3. Loan type filter
+      if (loanTypeFilter === 'emergency') {
+        if (!hasEmergencyLoan(customer)) return false
+      } else if (loanTypeFilter === 'regular') {
+        const custLoans = loans.filter(
+          (loan) =>
+            loan.customer_id === customer.id ||
+            loan.customer_id === customer.customer_id_display ||
+            loan.customer_id === customer.phone
+        )
+        const hasRegular = custLoans.some((l) => l.loan_purpose !== 'emergency')
+        if (!hasRegular) return false
+      }
+
+      // 4. Leader filter
+      const activeLoan = getCustomerActiveLoan(customer)
+      if (leaderFilter !== 'all') {
+        const leaderId = activeLoan?.team_leader_id || activeLoan?.team_leader?.id || activeLoan?.team_leader?.name
+        if (leaderId !== leaderFilter) return false
+      }
+
+      // 5. Batch filter
+      if (batchFilter !== 'all') {
+        if ((activeLoan?.weekly_batch || '').toLowerCase() !== batchFilter.toLowerCase()) {
+          return false
+        }
+      }
+
+      return true
+    })
+
+    // Sort
+    if (sortField) {
+      list = [...list].sort((a, b) => {
+        let valA: any = ''
+        let valB: any = ''
+        if (sortField === 'name') {
+          valA = a.name || ''
+          valB = b.name || ''
+        } else if (sortField === 'customer_id') {
+          valA = a.customer_id_display || a.id
+          valB = b.customer_id_display || b.id
+        } else if (sortField === 'leader') {
+          valA = getCustomerActiveLoan(a)?.team_leader?.name || ''
+          valB = getCustomerActiveLoan(b)?.team_leader?.name || ''
+        } else if (sortField === 'batch') {
+          valA = getCustomerActiveLoan(a)?.weekly_batch || ''
+          valB = getCustomerActiveLoan(b)?.weekly_batch || ''
+        } else if (sortField === 'loans') {
+          valA = getCustomerLoans(a).length
+          valB = getCustomerLoans(b).length
+        } else if (sortField === 'active_loans') {
+          valA = getActiveLoansCount(a)
+          valB = getActiveLoansCount(b)
+        } else if (sortField === 'amount') {
+          valA = getTotalLoanAmount(a)
+          valB = getTotalLoanAmount(b)
+        } else if (sortField === 'joined') {
+          valA = new Date(a.created_at || a.id).getTime()
+          valB = new Date(b.created_at || b.id).getTime()
+        }
+
+        if (typeof valA === 'string') {
+          const cmp = valA.localeCompare(valB)
+          return sortDirection === 'asc' ? cmp : -cmp
+        } else {
+          return sortDirection === 'asc' ? valA - valB : valB - valA
+        }
+      })
+    }
+
+    return list
+  }, [
+    customers,
+    loans,
+    searchTerm,
+    loanStatusFilter,
+    loanTypeFilter,
+    leaderFilter,
+    batchFilter,
+    sortField,
+    sortDirection,
+  ])
+
+  const handleSort = (field: string) => {
+    if (sortField === field) {
+      if (sortDirection === 'asc') setSortDirection('desc')
+      else {
+        setSortField(null)
+        setSortDirection('asc')
+      }
+    } else {
+      setSortField(field)
+      setSortDirection('asc')
+    }
   }
 
   const getTotalLoanAmount = (customer: Customer) => {
@@ -239,7 +391,17 @@ export default function CustomerManagement({ onBack }: CustomerManagementProps) 
         <div className="flex flex-wrap items-center gap-2.5 sm:gap-3">
           {/* 1. Export CSV */}
           <button
-            onClick={() => exportCustomers(customers)}
+            onClick={() => {
+              const exportList = customers.map((c) => {
+                const actLoan = getCustomerActiveLoan(c)
+                return {
+                  ...c,
+                  leaderName: actLoan?.team_leader?.name || '—',
+                  batchDay: actLoan?.weekly_batch || '—',
+                }
+              })
+              exportCustomers(exportList)
+            }}
             className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs sm:text-sm font-semibold shadow-sm transition-all hover:border-slate-400"
             title="Export all customers to CSV"
           >
@@ -295,17 +457,47 @@ export default function CustomerManagement({ onBack }: CustomerManagementProps) 
             <option value="emergency">Emergency</option>
           </select>
         </div>
+        <div className="flex items-center gap-2">
+          <label className="text-sm text-gray-600 font-medium">Leader</label>
+          <select
+            value={leaderFilter}
+            onChange={(e) => setLeaderFilter(e.target.value)}
+            className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 text-sm"
+          >
+            <option value="all">All Leaders</option>
+            {uniqueLeaders.map((ldr: any) => (
+              <option key={ldr.id} value={ldr.id}>
+                {ldr.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="text-sm text-gray-600 font-medium">Batch</label>
+          <select
+            value={batchFilter}
+            onChange={(e) => setBatchFilter(e.target.value)}
+            className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 text-sm"
+          >
+            <option value="all">All Batches</option>
+            <option value="tuesday">Tuesday</option>
+            <option value="thursday">Thursday</option>
+            <option value="friday">Friday</option>
+          </select>
+        </div>
       </div>
 
-      {/* Customers Table */}
-      <div className="fintech-table-container">
+      {/* Customers Table (Desktop & Tablet) */}
+      <div className="hidden md:block fintech-table-container">
         <div className="overflow-x-auto">
           <table className="fintech-table">
             <thead className="bg-slate-50/80">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Customer ID</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Name
+                <th
+                  onClick={() => handleSort('name')}
+                  className="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-slate-100"
+                >
+                  Customer {sortField === 'name' ? (sortDirection === 'asc' ? '↑' : '↓') : ''}
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Phone
@@ -313,17 +505,41 @@ export default function CustomerManagement({ onBack }: CustomerManagementProps) 
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Address
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Total Loans
+                <th
+                  onClick={() => handleSort('leader')}
+                  className="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-slate-100"
+                >
+                  Leader {sortField === 'leader' ? (sortDirection === 'asc' ? '↑' : '↓') : ''}
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Active Loans
+                <th
+                  onClick={() => handleSort('batch')}
+                  className="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-slate-100"
+                >
+                  Batch {sortField === 'batch' ? (sortDirection === 'asc' ? '↑' : '↓') : ''}
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Total Amount
+                <th
+                  onClick={() => handleSort('loans')}
+                  className="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-slate-100"
+                >
+                  Total Loans {sortField === 'loans' ? (sortDirection === 'asc' ? '↑' : '↓') : ''}
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Joined Date
+                <th
+                  onClick={() => handleSort('active_loans')}
+                  className="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-slate-100"
+                >
+                  Active Loans {sortField === 'active_loans' ? (sortDirection === 'asc' ? '↑' : '↓') : ''}
+                </th>
+                <th
+                  onClick={() => handleSort('amount')}
+                  className="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-slate-100"
+                >
+                  Total Amount {sortField === 'amount' ? (sortDirection === 'asc' ? '↑' : '↓') : ''}
+                </th>
+                <th
+                  onClick={() => handleSort('joined')}
+                  className="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-slate-100"
+                >
+                  Joined Date {sortField === 'joined' ? (sortDirection === 'asc' ? '↑' : '↓') : ''}
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Actions
@@ -334,94 +550,135 @@ export default function CustomerManagement({ onBack }: CustomerManagementProps) 
               {filteredCustomers.length > 0 ? (
                 filteredCustomers.map((customer) => {
                   const isEmergency = hasEmergencyLoan(customer)
+                  const activeLoan = getCustomerActiveLoan(customer)
                   return (
-                  <tr key={customer.id} className={`${isEmergency ? 'bg-red-50/60 ring-1 ring-red-200' : ''} hover:bg-gray-50`}>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                      {customer.customer_id_display || customer.id}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex items-center gap-2">
-                        {/* Customer Photo Thumbnail */}
-                        {customer.photo_url && (
-                          <div className="relative w-8 h-8 rounded-full overflow-hidden border border-gray-200 flex-shrink-0">
-                            <img
-                              src={customer.photo_url}
-                              alt=""
-                              className="w-full h-full object-cover"
-                              onError={(e) => {
-                                (e.target as HTMLImageElement).style.display = 'none'
-                              }}
-                            />
+                    <tr
+                      key={customer.id}
+                      className={`${isEmergency ? 'bg-red-50/60 ring-1 ring-red-200' : ''} hover:bg-gray-50 transition-colors`}
+                    >
+                      {/* 1. CUSTOMER */}
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex items-center gap-3">
+                          {customer.photo_url ? (
+                            <div className="relative w-9 h-9 rounded-full overflow-hidden border border-gray-200 flex-shrink-0">
+                              <img
+                                src={customer.photo_url}
+                                alt=""
+                                className="w-full h-full object-cover"
+                                onError={(e) => {
+                                  ;(e.target as HTMLImageElement).style.display = 'none'
+                                }}
+                              />
+                            </div>
+                          ) : (
+                            <div className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center text-slate-600 text-xs font-bold border border-slate-200 flex-shrink-0">
+                              {customer.name?.slice(0, 2).toUpperCase() || 'CU'}
+                            </div>
+                          )}
+                          <div className="flex flex-col">
+                            <div className="flex items-center gap-1.5">
+                              <CustomerNameLink
+                                customer={customer}
+                                name={customer.name}
+                                nameClassName="text-sm font-semibold text-gray-900 hover:text-primary-600"
+                              />
+                              {isEmergency && (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700">
+                                  Emergency
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-[11px] text-gray-500 font-mono">
+                              ID: {customer.customer_id_display || customer.id}
+                            </span>
                           </div>
-                        )}
-                        <div className="text-sm font-medium text-gray-900">{customer.name}</div>
-                        {isEmergency && (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700">
-                            Emergency
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex items-center text-sm text-gray-900">
-                        <Phone className="w-4 h-4 mr-2 text-gray-400" />
-                        {customer.phone}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex items-start text-sm text-gray-900 max-w-xs">
-                        <MapPin className="w-4 h-4 mr-2 mt-0.5 flex-shrink-0 text-gray-400" />
-                        <span className="truncate">{customer.address}</span>
-              </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-medium">
-                      {getCustomerLoans(customer).length}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className="inline-flex px-2.5 py-0.5 text-xs font-semibold rounded-full bg-green-100 text-green-800">
-                        {getActiveLoansCount(customer)}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                      ₹{getTotalLoanAmount(customer).toLocaleString('en-IN')}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {formatDate(customer.created_at || customer.id)}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                      <div className="flex items-center space-x-2">
-                <button
-                  onClick={() => setSelectedCustomer(customer)}
-                          className="text-blue-600 hover:text-blue-900"
-                          title="View Details"
-                >
-                  <Eye className="w-4 h-4" />
-                </button>
-                        <button
-                          onClick={() => handleEditCustomer(customer)}
-                          className="text-gray-600 hover:text-gray-900"
-                          title="Edit Customer"
-                        >
-                  <Edit className="w-4 h-4" />
-                </button>
-                        <button
-                          onClick={() => handleDeleteCustomer(customer)}
-                          className="text-red-600 hover:text-red-900"
-                          title="Delete Customer"
-                        >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-                    </td>
-                  </tr>
-                )})
+                        </div>
+                      </td>
+
+                      {/* 2. PHONE */}
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex items-center text-sm text-gray-900">
+                          <Phone className="w-4 h-4 mr-2 text-gray-400" />
+                          {customer.phone}
+                        </div>
+                      </td>
+
+                      {/* 3. ADDRESS */}
+                      <td className="px-6 py-4">
+                        <div className="flex items-start text-sm text-gray-900 max-w-xs">
+                          <MapPin className="w-4 h-4 mr-2 mt-0.5 flex-shrink-0 text-gray-400" />
+                          <span className="truncate">{customer.address}</span>
+                        </div>
+                      </td>
+
+                      {/* 4. LEADER */}
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <LeaderCell leader={activeLoan?.team_leader} />
+                      </td>
+
+                      {/* 5. BATCH */}
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <BatchPill batch={activeLoan?.weekly_batch} />
+                      </td>
+
+                      {/* 6. TOTAL LOANS */}
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-semibold">
+                        {getCustomerLoans(customer).length}
+                      </td>
+
+                      {/* 7. ACTIVE LOANS */}
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className="inline-flex px-2.5 py-0.5 text-xs font-semibold rounded-full bg-emerald-100 text-emerald-800">
+                          {getActiveLoansCount(customer)}
+                        </span>
+                      </td>
+
+                      {/* 8. TOTAL AMOUNT */}
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
+                        ₹{getTotalLoanAmount(customer).toLocaleString('en-IN')}
+                      </td>
+
+                      {/* 9. JOINED DATE */}
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {formatDate(customer.created_at || customer.id)}
+                      </td>
+
+                      {/* 10. ACTIONS */}
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                        <div className="flex items-center space-x-1.5">
+                          <button
+                            onClick={() => openCustomerProfile(customer.id)}
+                            className="p-1.5 rounded-lg text-blue-600 hover:text-blue-800 hover:bg-blue-50 transition-colors"
+                            title="View Details"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => handleEditCustomer(customer)}
+                            className="p-1.5 rounded-lg text-gray-600 hover:text-gray-800 hover:bg-gray-100 transition-colors"
+                            title="Edit Customer"
+                          >
+                            <Edit className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteCustomer(customer)}
+                            className="p-1.5 rounded-lg text-red-600 hover:text-red-800 hover:bg-red-50 transition-colors"
+                            title="Delete Customer"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })
               ) : (
                 <tr>
-                  <td colSpan={9} className="px-6 py-12 text-center text-sm text-gray-500">
+                  <td colSpan={10} className="px-6 py-12 text-center text-sm text-gray-500">
                     <div className="flex flex-col items-center">
                       <div className="w-12 h-12 bg-gray-100 rounded-full flex items-center justify-center mb-4">
                         <Phone className="w-6 h-6 text-gray-400" />
-            </div>
+                      </div>
                       <p className="text-lg font-medium text-gray-900 mb-2">No customers found</p>
                       <p className="text-gray-500 mb-4">
                         {searchTerm ? 'Try adjusting your search criteria' : 'Get started by adding your first customer'}
@@ -435,13 +692,137 @@ export default function CustomerManagement({ onBack }: CustomerManagementProps) 
                           <span>Add First Customer</span>
                         </button>
                       )}
-              </div>
+                    </div>
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* Mobile Card View (< 768px) */}
+      <div className="block md:hidden space-y-4">
+        {filteredCustomers.length > 0 ? (
+          filteredCustomers.map((customer) => {
+            const isEmergency = hasEmergencyLoan(customer)
+            const activeLoan = getCustomerActiveLoan(customer)
+            return (
+              <div
+                key={customer.id}
+                className={`bg-white rounded-xl p-4 border shadow-xs space-y-3 ${
+                  isEmergency ? 'border-red-300 bg-red-50/40' : 'border-slate-200'
+                }`}
+              >
+                {/* Header: Photo, Name, Display ID & Actions */}
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    {customer.photo_url ? (
+                      <div className="relative w-10 h-10 rounded-full overflow-hidden border border-gray-200 flex-shrink-0">
+                        <img
+                          src={customer.photo_url}
+                          alt=""
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            ;(e.target as HTMLImageElement).style.display = 'none'
+                          }}
+                        />
+                      </div>
+                    ) : (
+                      <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-600 text-xs font-bold border border-slate-200 flex-shrink-0">
+                        {customer.name?.slice(0, 2).toUpperCase() || 'CU'}
+                      </div>
+                    )}
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <CustomerNameLink
+                          customer={customer}
+                          name={customer.name}
+                          nameClassName="text-sm font-bold text-gray-900"
+                        />
+                        {isEmergency && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-red-100 text-red-700">
+                            Emergency
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-gray-500 font-mono">
+                        ID: {customer.customer_id_display || customer.id}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => openCustomerProfile(customer.id)}
+                      className="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50"
+                      title="View Details"
+                    >
+                      <Eye className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => handleEditCustomer(customer)}
+                      className="p-1.5 rounded-lg text-gray-600 hover:bg-gray-100"
+                      title="Edit Customer"
+                    >
+                      <Edit className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => handleDeleteCustomer(customer)}
+                      className="p-1.5 rounded-lg text-red-600 hover:bg-red-50"
+                      title="Delete Customer"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Leader & Batch chips */}
+                <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-100">
+                  <div className="flex items-center gap-1">
+                    <span className="text-[11px] text-gray-500">Leader:</span>
+                    <LeaderCell leader={activeLoan?.team_leader} />
+                  </div>
+                  <div className="flex items-center gap-1 ml-auto">
+                    <span className="text-[11px] text-gray-500">Batch:</span>
+                    <BatchPill batch={activeLoan?.weekly_batch} size="sm" />
+                  </div>
+                </div>
+
+                {/* Contact & Address */}
+                <div className="space-y-1 text-xs text-gray-600">
+                  <div className="flex items-center gap-2">
+                    <Phone className="w-3.5 h-3.5 text-gray-400" />
+                    <span>{customer.phone}</span>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <MapPin className="w-3.5 h-3.5 mt-0.5 text-gray-400 flex-shrink-0" />
+                    <span className="line-clamp-2">{customer.address}</span>
+                  </div>
+                </div>
+
+                {/* Metrics */}
+                <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-100 text-center">
+                  <div className="bg-slate-50 p-2 rounded-lg">
+                    <div className="text-[10px] text-gray-500">Total Loans</div>
+                    <div className="text-xs font-bold text-gray-900">{getCustomerLoans(customer).length}</div>
+                  </div>
+                  <div className="bg-emerald-50 p-2 rounded-lg">
+                    <div className="text-[10px] text-emerald-700">Active</div>
+                    <div className="text-xs font-bold text-emerald-800">{getActiveLoansCount(customer)}</div>
+                  </div>
+                  <div className="bg-slate-50 p-2 rounded-lg">
+                    <div className="text-[10px] text-gray-500">Amount</div>
+                    <div className="text-xs font-bold text-gray-900">₹{getTotalLoanAmount(customer).toLocaleString('en-IN')}</div>
+                  </div>
+                </div>
               </div>
+            )
+          })
+        ) : (
+          <div className="p-8 text-center bg-white rounded-xl border border-slate-200 text-sm text-gray-500">
+            No customers match the current search or filters.
+          </div>
+        )}
       </div>
 
       {/* Add Customer Modal */}
@@ -456,17 +837,7 @@ export default function CustomerManagement({ onBack }: CustomerManagementProps) 
       )}
 
       {/* Customer Details Modal */}
-      {selectedCustomer && (
-        <CustomerDetailsModal
-          customer={selectedCustomer}
-          loans={getCustomerLoans(selectedCustomer)}
-          onClose={() => setSelectedCustomer(null)}
-          onOpenFullHistory={(c) => {
-            setSelectedCustomer(null)
-            setHistoryTargetCustomer(c)
-          }}
-        />
-      )}
+      /* CustomerDetailsModal replaced by unified CustomerProfileDrawer */
 
       {/* Edit Customer Modal */}
       {showEditModal && customerToEdit && (
@@ -716,9 +1087,6 @@ function CustomerDetailsModal({
                             Emergency Loan
                           </span>
                         )}
-                        <div className="mt-2">
-                          <DisbursementInfo loan={loan} variant="compact" />
-                        </div>
                       </div>
                       <span className={`px-2 py-1 text-xs font-semibold rounded-full ${
                         loan.status === 'active' ? 'bg-green-100 text-green-800' :
